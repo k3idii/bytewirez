@@ -56,7 +56,7 @@ with r.start_object():
  ```json
  {"struct": {"$TYPE": "LIST", "$POS": 0, "$SIZE": 10, "items": [{"$TYPE": "OBJECT", "$POS": 0, "$SIZE": 10, "$NAME": "Unnamed", "test_string": {"$TYPE": "DATA", "$POS": 0, "$SIZE": 4, "data_hex": "74657374"}, "items": {"$TYPE": "LIST", "$POS": 4, "$SIZE": 6, "items": [{"$TYPE": "DATA", "$POS": 4, "$SIZE": 2, "format": ">H", "data_fmt": 12593, "data_hex": "3131"}, {"$TYPE": "DATA", "$POS": 6, "$SIZE": 4, "format": ">I", "data_fmt": 842150707, "data_hex": "32323333"}]}, "$ORDER": ["test_string", "items"]}]}, "data": "74657374313132323333"}
  ```
- Aaand the (ugly) html viewer :
+ Aaand the (ugly) html viewer (seriously, if anyone can make this stuff looks better ... )
  
  ![image](https://user-images.githubusercontent.com/7603260/183519032-d46a3533-4750-4a33-b635-1a21f2e4cb19.png)
 

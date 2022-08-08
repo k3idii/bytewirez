@@ -233,7 +233,7 @@ class Wire:
 class QuietLogger:
   def __getattribute__(self, __name: str):
     def _dummy(*a,**kw):
-      print(f"{__name} : {a} {kw}")
+      print(f"{__name:10} : ",*a,**kw)
     return _dummy
 
 
@@ -503,7 +503,7 @@ if __name__ == '__main__':
   print("OK!")
   
   
-  wire = Wire(from_bytes=tmp)
+  wire = Wire(from_bytes=b'test112233')
   r = StructureReader(wire)
   with r.start_object():
     r.will_read("test_string")

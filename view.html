@@ -23,7 +23,9 @@
  
   <div id="struct"></div>
   <div id="info">.. </div>
+  <div id="chardump"> .. </div> 
   <div id="hexdump"> .. </div> 
+  
 </div>
 
 
@@ -34,13 +36,6 @@ html, body {
     font-family: Arial, Helvetica, sans-serif;
     text-align: justify;
 }
-  #struct { 
-    width:60%; 
-    height: 60vh; 
-    overflow:  scroll;
-    float: left;
-
-  }
 
   .txtblock { 
     color: black;
@@ -65,25 +60,59 @@ html, body {
     width: 100px;
   }
 
+  #struct { 
+    width:40%; 
+    height: 60vh; 
+    overflow:  scroll;
+    float: left;
+
+  }
+
 
   #hexdump { 
     position: relative;
     float:right;
-    border: 2px black solid;
-    word-wrap:break-word;  
-    max-width: 38ch; 
-    overflow-wrap: break-word;
+    border: 0;
+    max-width: 50ch; 
     vertical-align: top;
     font-size: 12pt;
     height: 60vh; 
     overflow:  scroll;
   }
+
+  #chardump { 
+    position: relative;
+    float:right;
+    border: 0;
+    max-width: 50ch; 
+    vertical-align: top;
+    font-size: 12pt;
+    height: 60vh;
+    overflow:  scroll;
+  }
+
   .one_hex { 
     padding: 2px; 
     font-family: monospace;
     white-space: pre; 
   }
-
+  .one_hex:nth-child(16n+1)::before {
+    background-color: white;
+    float:right;
+    content: "\a";
+    white-space: pre;
+  }
+  .one_chr { 
+    padding: 2px; 
+    font-family: monospace;
+    white-space: pre; 
+  }
+  .one_chr:nth-child(16n+1)::before {
+    background-color: white;
+    float:right;
+    content: "\a";
+    white-space: pre;
+  }
 </style>
 
 
@@ -97,10 +126,35 @@ html, body {
     l = l*2 ;
     return i.toString(16).padStart(l,'0');
   }
-  function hexChunks(s){
+  function hexChunks(id, s){
+    var r = [];
+    for (e of s.match(/.{2}/g)) {
+      var el1 = new_element(id,"span", "one_hex")
+      el1.innerHTML = e;
+      r.push(el1);
+      document.getElementById('hexdump').appendChild(el1);
+
+      var i = parseInt(e, 16);
+      //console.log("HEX",e,i);
+      var el2 = new_element(id,"span", "one_chr");
+      var c = ( 32 < i && i < 128 ) ? String.fromCharCode(i):'.';
+      el2.innerHTML = c;
+      r.push(el2);
+      document.getElementById('chardump').appendChild(el2);
+
+
+      //r += `<span id='hex_${id}' class='one_hex'>${e}</span>`;
+    }
+    return r;
+    //return s.match(/.{2}/g).join(' ') 
+  }
+
+  function hexChunksChar(id, s){
     var r = '';
     for (e of s.match(/.{2}/g)) {
-      r += `<span class='one_hex'>${e}</span>`;
+      var i = parseInt(e, 16);
+      var c = 32<i<128? "a" : "b"
+      r += `<span id='chr_${id}' class='one_hex'>${c}</span>`;
     }
     return r;
     //return s.match(/.{2}/g).join(' ') 
@@ -112,7 +166,7 @@ html, body {
     document.getElementById('struct').innerHTML += "<br>" + m;
   }
   function offset(x){
-    return `0x${ asHex(x.$POS,4) } + 0x${ asHex(x.$SIZE,2)} : ` + '-'.repeat(padding);
+    return `0x${ asHex(x.$POS,4) } + 0x${ asHex(x.$SIZE,2)} : ` + '-';
   }
 
   function new_element(id, elm, cls){
@@ -122,25 +176,8 @@ html, body {
     for (c of cls.split(' ')){
       tmp.classList.add(c)
     }
-    tmp.onmouseover1 = function () {
-      this.classList.add('hoverme');
-      //this._my_friend.classList.add('hoverme');
-    }
-    tmp.onmouseout1 = function () {
-      this.classList.remove('hoverme');
-      //this._my_friend.classList.remove('hoverme');
-    }
     return tmp;
   }
-
-
-  function hex_block(id,c,){
-    var tmp = new_element(`${id}`, 'span', 'hexblock')
-    tmp.innerHTML = c || '';
-    return tmp
-    //return `<span class='hexblock' id='h_${id}'>${c}</span>`;
-  }
-
 
   function text_block(id, c, cls){
     cls = cls || ''
@@ -150,20 +187,23 @@ html, body {
       // alert(this.id);
       return false;
     }
-    return tmp
+    tmp._my_friends = [];
+    return tmp;
     // return `<div class="txtblock ${sc}' id='s_${id}'>${c}</div>`;
   }
 
-  function glue(a,b){
-    a._my_friend = b;
-    b._my_friend = a;
+
+
+  function make_friend(a, items){
+    for (const i of items){
+      a._my_friends.push(i);
+    }
   }
 
   function walk_LIST(x){
     l(offset(x) + ':: LIST');
     var id = nextID();
 
-    var hex_stuff = hex_block(id, '', 'obj_hex');
     var txt_stuff = text_block(id, '', 'list_block single_item');
     var txt_head  = text_block(id,`LIST   size:${x.$SIZE}`, 'list_head');
     var txt_body = text_block(id, '', 'list_body');
@@ -171,24 +211,25 @@ html, body {
     txt_stuff.appendChild(txt_body);
     txt_stuff._offset = x.$POS;
 
+    var hexes = [];
     var i = 0 ;
     for ( const element of x.items){
         var tmp = walk(element);
-        console.log(x);
+        //console.log(x);
 
         var item = text_block(tmp.txt.id, `● item:${i}`, 'list_item');
         item.appendChild(tmp.txt)
         item._offset = element.$POS;
 
         txt_body.appendChild(item);
-        hex_stuff.appendChild(tmp.hex);
-        glue(item, tmp.hex);
+        make_friend(item, tmp.hex);
+        hexes.push(...tmp.hex);
     }
 
-    glue(txt_stuff, hex_stuff);
+    make_friend(txt_stuff, hexes);
     return {
       txt: txt_stuff,
-      hex: hex_stuff,
+      hex: hexes,
     };
   }
 
@@ -197,7 +238,6 @@ html, body {
     l(offset(x) + ':: OBJECT : ' + `${x.$NAME}`);
     var id = nextID();
 
-    var hex_stuff = hex_block(id, '', 'obj_hex');
     var txt_stuff = text_block(id, '', 'obj_block single_item');
     var txt_head = text_block(id,`object "${x.$NAME}" , size:${x.$SIZE}`, 'obj_head')
     var txt_body = text_block(id, '', 'obj_body');
@@ -205,29 +245,32 @@ html, body {
     txt_stuff.appendChild(txt_body);
     txt_stuff._offset = x.$POS;
 
+    var hexes = [];
+
     for ( const element of x.$ORDER){
   
       l(offset(x)+"field:"+element);
       var value = x[element];
-      console.log("VALUE:", value);
+      //console.log("VALUE:", value);
       var tmp = walk(value);
-      console.log("RETURN : ",element, tmp);
+      //console.log("RETURN : ",element, tmp);
       
       var item = text_block(tmp.txt.id, `▶  ${element}`, 'object_item');
       item.appendChild(tmp.txt);
       item._offset = value.$POS;
 
-      glue(item, tmp.hex);
+      make_friend(item, tmp.hex);
+      hexes.push(...tmp.hex);
       // console.log("ADD",tmp.txt, "->TO->", txt_body);
 
       txt_body.appendChild(item);
-      hex_stuff.appendChild(tmp.hex);
 
     }
-    glue(txt_stuff, hex_stuff);
+    //console.log("BIND", txt_stuff, hexes);
+    make_friend(txt_stuff, hexes);
     return {
       txt: txt_stuff,
-      hex: hex_stuff,
+      hex: hexes,
     };
   }
 
@@ -240,19 +283,25 @@ html, body {
       other = `FORMAT:${x.format} VALUE:${x.data_fmt}`; 
     }
     var txt_stuff = text_block(id, `DATA: size:${x.$SIZE} ${other}`, 'data_block single_item') ;
-    var hex_stuff = hex_block(id, hexChunks(x.data_hex) ) ;
+    var hex_stuff = hexChunks(id, x.data_hex) ;
+    //console.log(hex_stuff);
 
     txt_stuff._offset = x.$POS;
-    glue(txt_stuff, hex_stuff);
+
+    make_friend(txt_stuff, hex_stuff)
+
+
     return {
       txt: txt_stuff,
       hex: hex_stuff,
     };
   }
 
-  var padding = 0 ;
+
+
+
+
   function walk(item){
-    padding ++;
     if ( item.$TYPE == 'LIST' ) {
       return walk_LIST(item);
     }
@@ -262,21 +311,45 @@ html, body {
     if ( item.$TYPE == 'DATA' ) {
       return walk_DATA(item);
     }
-    padding --;
   }
+
+
+
+
 
   function loadStuff(){
     var raw = JSON.parse(document.getElementById('inputdata').value);
-    console.log(raw);
+    //console.log(raw);
     window.raw_object = raw;
-    html_stuff = walk(raw.struct);
     document.getElementById('struct').innerHTML='';
-    document.getElementById('struct').appendChild(html_stuff.txt);
     document.getElementById('hexdump').innerHTML='';
-    document.getElementById('hexdump').appendChild(html_stuff.hex);
+    document.getElementById('chardump').innerHTML='';
+    result = walk(raw.struct);
+
+    document.getElementById('struct').appendChild(result.txt);
+    
+    //console.log(result);
+    for (item of result.hex){
+     //console.log(item);
+     
+    }
+    var junk = new_element('filler',"span", "one_hex");
+    junk.innerHTML = '..';
+    document.getElementById('hexdump').appendChild(junk);
+    document.getElementById('hexdump').appendChild(junk);
+    //document.getElementById('chrdump').appendChild()
+    // document.getElementById('hexdump').appendChild(html_stuff.hex);
 
   
   }
+
+
+
+
+
+
+
+
   addEventListener('load', (event) => {
 
     let parent = document.getElementById('struct');
@@ -290,23 +363,29 @@ html, body {
       if ( type == 'mouseover' ) {
         if ( event.target.hasOwnProperty('_offset') ) {
           var o = event.target._offset;
-          document.getElementById('info').innerHTML = ` Offset :<br> 0x${asHex(o)}`;
+          document.getElementById('info').innerHTML = ` Offset :<br> 0x${asHex(o,4)}`;
         }
       } else {
         document.getElementById('info').innerHTML = '';
       }
 
       //console.log(type + " target=" + event.target.id)
-      if (event.target._my_friend) {
+      if (event.target._my_friends) {
         //console.log(type, type=='mouseover', type=='mouseout'); // , event.target.classList, event.target._my_friend.classList);
         if ( type == 'mouseover' ) {
           //console.log("ADD");
           event.target.classList.add('hoverme');
-          event.target._my_friend.classList.add('hoverme');
+          event.target._my_friends.forEach(element => {
+            element.classList.add('hoverme');
+          });
+          // event.target._my_friend.classList.add('hoverme');
         } else {
           //console.log("REMOVE");
           event.target.classList.remove('hoverme');
-          event.target._my_friend.classList.remove('hoverme');
+          //event.target._my_friend.classList.remove('hoverme');
+          event.target._my_friends.forEach(element => {
+            element.classList.remove('hoverme');
+          });
         }
         //console.log("END", event.target, event.target._my_friend);
       }

@@ -350,6 +350,7 @@ class StructureReader:
   _names_stack = None
   _last_format = None
   _current_item = None
+  _silent = False
   logger = None
   main = None
   
@@ -447,13 +448,16 @@ class StructureReader:
     return '  ' * self._struct_depth
   
   def log_inf(self, msg):
-    self.logger.info( self._str_pos() + self._indent() + msg)
+    if not self._silent:
+      self.logger.info( self._str_pos() + self._indent() + msg)
 
   def log_dbg(self, msg):
-    self.logger.debug( self._str_pos() + self._indent()  + msg)
+    if not self._silent:
+      self.logger.debug( self._str_pos() + self._indent()  + msg)
 
   def log_wrn(self, msg):
-    self.logger.warning( self._str_pos() + self._indent()  + msg)
+    if not self._silent:
+      self.logger.warning( self._str_pos() + self._indent()  + msg)
 
 
   def get_struct(self):

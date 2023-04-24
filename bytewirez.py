@@ -11,7 +11,17 @@ from urllib3 import Retry
 ENDIAN_BIG    = ">"
 ENDIAN_LITTLE = "<"
 
-
+class RefCounter:
+  count = 0
+  item_format = '{name}__{self.count}'
+  def __init__(self, start=0, item_format=None):
+    self.count = start
+    if item_format:
+      self.item_format = item_format
+      
+  def next(self, name='ITEM'):
+    self.count += 1
+    return self.item_format.format(name=name, self=self)
 
 def unpack_ex(fmt, data, into=None):
   parts = struct.unpack(fmt, data)
@@ -249,7 +259,7 @@ class BaseItemInterface:
     return result
 
 
-class ObjectItem(BaseItemInterface):
+class StructItemOBJECT(BaseItemInterface):
   _items = None
   name = 'UNNAMED'
   info = None
@@ -278,7 +288,7 @@ class ObjectItem(BaseItemInterface):
 
 
 
-class ListOfItems(BaseItemInterface):
+class StructItemLIST(BaseItemInterface):
   _items = None
   kind = 'LIST'
 
@@ -408,7 +418,7 @@ class StructureReader:
     self._wire = wire
     self._item_stack = list()
     self._names_stack = list()
-    self._item_stack.append(ListOfItems(pos=self._wire.get_pos())) # root element
+    self._item_stack.append(StructItemLIST(pos=self._wire.get_pos())) # root element
     self.ctx_logger = StructureContextLogger(struct_reader=self)
     
     # install hooks ;
@@ -442,25 +452,25 @@ class StructureReader:
 
 
   def start_object(self, name='Unnamed', info='', comment=''):
-    obj = ObjectItem(name=name, pos=self._wire.get_pos(), info=info)
+    obj = StructItemOBJECT(name=name, pos=self._wire.get_pos(), info=info)
     self._push_item(obj)
     self.ctx_logger.log_inf(f"START object : {name} ")
     return MagicStructReaderScope(self, obj, comment)
  
   def start_list(self, comment=''):
-    obj = ListOfItems(pos=self._wire.get_pos())
+    obj = StructItemLIST(pos=self._wire.get_pos())
     self._push_item(obj)
     self.ctx_logger.log_inf(f"START list")
     return MagicStructReaderScope(self, obj, comment)
   
   def _append_to_current(self, o):
     top = self.last_item()
-    if type(top) == ObjectItem:
+    if type(top) == StructItemOBJECT:
       assert len(self._names_stack)>0, f"Need field name for property (object:{top.name})!"
       name = self._names_stack.pop()
       self.ctx_logger.log_inf(f"[+] field: {name}")
       top.add( name, o)
-    elif type(top) == ListOfItems:
+    elif type(top) == StructItemLIST:
       top.add( o )
     else:
       raise Exception("OMG !")
@@ -500,8 +510,60 @@ class StructureReader:
     )
 
   def output_imHex(self):
-    """ plceholder """
-    pass 
+    parts = []
+    tmp = self._item_stack[0]
+    
+    COUNTER = RefCounter()
+    imhex_translate = {
+      '>h' : 'u16',
+    }
+    
+    def _imhex_obj(el):
+      name = COUNTER.next('OBJECT') + "__" + el.name
+      tmp=[]
+      tmp.append(f"struct {name} {{ // at {el.pos}")
+      for prop, val in el._items:
+        item_type,n = _imhex_parse(val)
+        if n == 1:
+          tmp.append(f"  {item_type} {prop} ; ")
+        else:
+          tmp.append(f"  {item_type} {prop}[{n}] ; ")
+      tmp.append(" }; // obj ")
+      parts.append( '\n'.join( tmp ) )
+      return name, 1
+    
+    def _imhex_list(el):
+      name = COUNTER.next('ARRAY')
+      tmp = []
+      tmp.append(f"struct {name} {{ // at {el.pos}")
+      for i,item in enumerate(el._items):
+        item_type,n = _imhex_parse(item)
+        if n == 1:
+          tmp.append(f"  {item_type}  ITEM_{i};")
+        else:
+          tmp.append(f"  {item_type}  ITEM_{i}[{n}];")
+      tmp.append(" }; // end " )
+      parts.append( '\n'.join( tmp ) )
+      return name, 1
+    
+    def _imhex_data(el):
+      if el.fmt and el.fmt in imhex_translate:
+        return imhex_translate[el.fmt], 1
+      n = el.size
+      return f"u8", n
+    
+    def _imhex_parse(el):
+      if el.kind == 'LIST':
+        return _imhex_list(el)
+      if el.kind == 'OBJECT':
+        return _imhex_obj(el)
+      if el.kind == 'DATA':
+        return _imhex_data(el)
+      raise Exception("BAD NODE")
+      
+    root,_  = _imhex_parse(tmp)
+    parts.append(f"{root} rootItem @ 0x00;\n")
+    return '\n\n'.join(parts[:])
 
   def output_kaitai(self):
     """ plceholder """

@@ -230,14 +230,6 @@ class Wire:
   
     
 
-class QuietLogger:
-  def __getattribute__(self, __name: str):
-    def _dummy(*a,**kw):
-      print(f"{__name:10} : ",*a,**kw)
-    return _dummy
-
-
-
 
 
 class BaseItemInterface:
@@ -326,24 +318,82 @@ class DataItem(BaseItemInterface):
 
 
 
-class MagicWireScope:
+class MagicStructReaderScope:
   def __init__(self, parent, obj, comment=''):
     self.parent = parent
     self.obj = obj
-    self.comment = type(obj).__name__ + " | " + comment
+    self.comment = type(obj).__name__ 
+    if comment != '' :
+      self.comment + " // " + comment
   
   def __enter__(self):
-    self.parent.log_dbg(f" >> {self.comment}")
+    self.parent.ctx_logger.log_dbg(f" >BEGIN> {self.comment}")
     self.parent._struct_depth += 1
     
   def __exit__(self, *a, **kw):
     self.parent._struct_depth -= 1
-    self.parent.log_dbg(f" << {self.comment}")
+    self.parent.ctx_logger.log_dbg(f" <END< {self.comment}")
     self.parent.end_item(*a, **kw)
     
     
+class DummyPrintLogger:
+  def __getattribute__(self, __name: str):
+    def _dummy(*a,**kw):
+      print(f"{__name:10} : ",*a,**kw)
+    return _dummy
+
+class StructureContextLogger:
+  """ 
+  another abstraction layer.
+  will log current position of cursor while paring  binary data
+  `logger` object need to have info,debug and warning methods 
+  if `logger` is None -> no logging 
   
+  """
+  stay_silent = False
+  do_indent = True 
+  
+  def __init__(self, struct_reader, logger=None):
+    self.parent = struct_reader
+    if logger:
+      self.logger = logger 
+    else:
+      self.logger = DummyPrintLogger()
+    
+  def position_as_string(self):
+    return f"0x{self.parent._wire.get_pos():08X} : "  
+
+  def indent_str(self):
+    if self.do_indent:
+      return '  ' * self.parent._struct_depth
+    else:
+      return ' '
+  
+  def log_inf(self, msg):
+    if self.logger and not self.stay_silent:
+      self.logger.info( self.position_as_string() + self.indent_str() + msg)
+
+  def log_dbg(self, msg):
+    if self.logger and not self.stay_silent:
+      self.logger.debug( self.position_as_string() + self.indent_str()  + msg)
+
+  def log_wrn(self, msg):
+    if self.logger and not self.stay_silent:
+      self.logger.warning( self.position_as_string() + self.indent_str()  + msg)
+
+  def log_err(self, msg):
+    if self.logger and not self.stay_silent:
+      self.logger.error( self.position_as_string() + self.indent_str()  + msg)
+
+
 class StructureReader:
+  """
+    Implements reading of basic nested structures/collections such as :
+      - objects/dicts 
+      - lists/arrays 
+    
+
+  """
   _bytes_so_far = 0
   _item_stack = None
   _struct_depth = 0
@@ -351,15 +401,15 @@ class StructureReader:
   _last_format = None
   _current_item = None
   _silent = False
-  logger = None
+  ctx_logger = None
   main = None
   
   def __init__(self, wire: Wire):
     self._wire = wire
-    self.logger = QuietLogger()
     self._item_stack = list()
     self._names_stack = list()
     self._item_stack.append(ListOfItems(pos=self._wire.get_pos())) # root element
+    self.ctx_logger = StructureContextLogger(struct_reader=self)
     
     # install hooks ;
     wire.install_hook(HOOK_PRE_READ,  self._pre_read)
@@ -394,21 +444,21 @@ class StructureReader:
   def start_object(self, name='Unnamed', info='', comment=''):
     obj = ObjectItem(name=name, pos=self._wire.get_pos(), info=info)
     self._push_item(obj)
-    self.log_inf(f"START object : {name} ")
-    return MagicWireScope(self, obj, comment)
+    self.ctx_logger.log_inf(f"START object : {name} ")
+    return MagicStructReaderScope(self, obj, comment)
  
   def start_list(self, comment=''):
     obj = ListOfItems(pos=self._wire.get_pos())
     self._push_item(obj)
-    self.log_inf(f"START list")
-    return MagicWireScope(self, obj, comment)
+    self.ctx_logger.log_inf(f"START list")
+    return MagicStructReaderScope(self, obj, comment)
   
   def _append_to_current(self, o):
     top = self.last_item()
     if type(top) == ObjectItem:
       assert len(self._names_stack)>0, f"Need field name for property (object:{top.name})!"
       name = self._names_stack.pop()
-      self.log_inf(f"[+] field: {name}")
+      self.ctx_logger.log_inf(f"[+] field: {name}")
       top.add( name, o)
     elif type(top) == ListOfItems:
       top.add( o )
@@ -429,36 +479,17 @@ class StructureReader:
     
     if exception_type is not None:
       import traceback
-      self.logger.error(f"  ** EXCEPTION ** ")
-      self.logger.error(f"ERROR at {self.last_item().__class__.__name__}")
+      self.ctx_logger.log_err(f"  ** EXCEPTION ** ")
+      self.ctx_logger.log_err(f"ERROR at {self.last_item().__class__.__name__}")
       for item in self._item_stack:
-        self.logger.error(item.__class__.__name__)
-      
-  
-      self.logger.error(f"-> type:{exception_type} : value:{exception_value}")
-      self.logger.error(f"==> REASON:{0}",traceback.extract_tb(exception_traceback))
+        self.ctx_logger.log_err(item.__class__.__name__)
+    
+      self.ctx_logger.log_err(f"-> type:{exception_type} : value:{exception_value}")
+      self.ctx_logger.log_err(f"==> REASON:{0}",traceback.extract_tb(exception_traceback))
       
       raise Exception('DIE')
     
     
-  def _str_pos(self):
-    return f"0x{self._wire.get_pos():08X} : "  
-
-  def _indent(self):
-    return '  ' * self._struct_depth
-  
-  def log_inf(self, msg):
-    if not self._silent:
-      self.logger.info( self._str_pos() + self._indent() + msg)
-
-  def log_dbg(self, msg):
-    if not self._silent:
-      self.logger.debug( self._str_pos() + self._indent()  + msg)
-
-  def log_wrn(self, msg):
-    if not self._silent:
-      self.logger.warning( self._str_pos() + self._indent()  + msg)
-
 
   def get_struct(self):
     # dump root element
@@ -468,13 +499,20 @@ class StructureReader:
       data = self._wire.dump().hex()
     )
 
-  def yaml_dump(self,obj):
-    import yaml
-    yaml.add_representer(OrderedDict, lambda dumper, data: dumper.represent_mapping('tag:yaml.org,2002:map', data.items()))
-    return yaml.dump(obj, default_flow_style=False)
+  def output_imHex(self):
+    """ plceholder """
+    pass 
+
+  def output_kaitai(self):
+    """ plceholder """
+    pass
 
 
 
+def yaml_dump(self,obj):
+  import yaml
+  yaml.add_representer(OrderedDict, lambda dumper, data: dumper.represent_mapping('tag:yaml.org,2002:map', data.items()))
+  return yaml.dump(obj, default_flow_style=False)
 
 
 

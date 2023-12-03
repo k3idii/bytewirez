@@ -414,12 +414,12 @@ class StructureReader:
   ctx_logger = None
   main = None
   
-  def __init__(self, wire: Wire):
+  def __init__(self, wire: Wire, logger=None):
     self._wire = wire
     self._item_stack = list()
     self._names_stack = list()
     self._item_stack.append(StructItemLIST(pos=self._wire.get_pos())) # root element
-    self.ctx_logger = StructureContextLogger(struct_reader=self)
+    self.ctx_logger = StructureContextLogger(struct_reader=self, logger=logger)
     
     # install hooks ;
     wire.install_hook(HOOK_PRE_READ,  self._pre_read)

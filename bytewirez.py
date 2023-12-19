@@ -4,14 +4,14 @@ import io
 import os 
 import struct
 from typing import OrderedDict
-
-from urllib3 import Retry
+from venv import logger
 
 
 ENDIAN_BIG    = ">"
 ENDIAN_LITTLE = "<"
 
-class RefCounter:
+
+class IncrementalNameGenerator:
   count = 0
   item_format = '{name}__{self.count}'
   def __init__(self, start=0, item_format=None):
@@ -22,6 +22,7 @@ class RefCounter:
   def next(self, name='ITEM'):
     self.count += 1
     return self.item_format.format(name=name, self=self)
+
 
 def unpack_ex(fmt, data, into=None):
   parts = struct.unpack(fmt, data)
@@ -44,7 +45,6 @@ HOOK_PRE_WRITE  = "pre_write"
 HOOK_POST_WRITE = "post_write"
 HOOK_FMT_WRITE  = "fmt_write"
 
-
 HOOK_PRE_PEEK   = "pre_peek"
 HOOK_POST_PEEK  = "post_peek"
 
@@ -58,17 +58,18 @@ class Wire:
   _hooks = {}
   
   def __init__(self, from_fd=None, from_bytes=None, from_string=None):
-    if from_fd : 
+    if from_fd is not None: 
       self._obj = from_fd
-    elif from_bytes:
+    elif from_bytes is not None:
       self._obj = io.BytesIO(from_bytes)
-    elif from_string:
+    elif from_string is not None:
       self._obj = io.BytesIO(from_string.decode())
     else:
+      logger.warn("Initialized with empty bytesIO")
       self._obj = io.BytesIO(b"")
     self.initialize()
       
-  def initialize(self): # to make override less painfull 
+  def initialize(self): # to make override less painfull without super()
     self._pos_stack = list()
       
   def install_hook(self, where, fnc):
@@ -77,7 +78,7 @@ class Wire:
       self._hooks[where] = []
     self._hooks[where].append(fnc)
   
-  def _exec_hook(self, where, nargs, *arg,):
+  def _exec_hook(self, where, nargs, *arg):
     if nargs == 1:
       a = arg[0]
     for fnc in self._hooks.get(where, []):
@@ -97,33 +98,26 @@ class Wire:
     self._endian = e
       
   def pushd(self):
+    """ push current position on stack """
     self._pos_stack.append(self.get_pos())
   
   def popd(self):
+    """ pop position from stack and set it """
     self._obj.seek(self._pos_stack.pop(), os.SEEK_SET)
   
   def peekn(self, n):
+    """ Peek exacly n-bytes """
     b = self.peek(n)
     if len(b) != n:
       raise Exception(f"Fail to peek {n} bytes , got {len(b)}")
     return b  
   
   def readn(self, n):
+    """ Read exacly n-bytes """
     b = self.read(n)
     if len(b) != n:
       raise Exception(f"Fail to read {n} bytes , got {len(b)}")
     return b
-  
-  def read_fmt(self, fmt, into_dict=None):
-    fmt = self._exec_hook(HOOK_FMT_READ, 1, fmt)
-    sz = struct.calcsize(fmt)
-    b = self.readn(sz)
-    return unpack_ex(fmt, b, into_dict)
-
-  def peek_fmt(self, fmt, into_dict=None):
-    sz = struct.calcsize(fmt)
-    b = self.peekn(sz)
-    return unpack_ex(fmt, b, into_dict)
 
   def peek(self, n):
     self.pushd()
@@ -146,12 +140,15 @@ class Wire:
     return value
   
   def bytes_available(self):
+    """ Try to check how many bytes are still to read in the stream"""
     p1 = self.get_pos()
     self.pushd()
     self.goto_end()
     p2 = self.get_pos()
     self.popd()
     return p2-p1 
+
+  ## POSTITION 
 
   def get_pos(self):
     return self._obj.tell()
@@ -164,7 +161,23 @@ class Wire:
   
   def goto_end(self):
     self._obj.seek(0, os.SEEK_END)
-    
+  
+  ## READING 
+
+  def read_fmt(self, fmt, into_dict=None):
+    """ Read using struct format """
+    fmt = self._exec_hook(HOOK_FMT_READ, 1, fmt)
+    sz = struct.calcsize(fmt)
+    b = self.readn(sz)
+    return unpack_ex(fmt, b, into_dict)
+
+  def peek_fmt(self, fmt, into_dict=None):
+    """ Peek using struct format """
+    sz = struct.calcsize(fmt)
+    b = self.peekn(sz)
+    return unpack_ex(fmt, b, into_dict)
+  
+  ## WRITING 
 
   def write_fmt(self, fmt, *a):
     return self.write(struct.pack(fmt, *a))
@@ -172,7 +185,6 @@ class Wire:
   def write_hex(self, stuff):
     return self.write(bytes.fromhex(stuff))
 
- 
  
   def _peek_single(self, fmt):
     self.pushd()
@@ -186,6 +198,9 @@ class Wire:
   
   _read_single  = lambda s, f: s.read_fmt(s._endian + f)
   
+  ## Reading basic values  
+  # TODO: add endian support
+
   def read_byte(self):
     return self._read_single('B')
   
@@ -225,7 +240,6 @@ class Wire:
   def write_qword(self, val):
     return self._write_single('Q', val)
   
-  
   def write_sbyte(self, val):
     return self._write_single('b', val)
   
@@ -239,6 +253,8 @@ class Wire:
     return self._write_single('q', val)
   
     
+
+
 
 
 
@@ -292,7 +308,6 @@ class StructItemLIST(BaseItemInterface):
   _items = None
   kind = 'LIST'
 
-
   def __init__(self, **kwargs) -> None:
     super().__init__(**kwargs)
     self._items = []
@@ -306,9 +321,7 @@ class StructItemLIST(BaseItemInterface):
     result['items'] = [item.dump() for item in self._items]
     return result
   
-  
-  
-  
+
 class DataItem(BaseItemInterface):
   raw = b''
   fmt = None
@@ -328,6 +341,58 @@ class DataItem(BaseItemInterface):
 
 
 
+
+
+PROXY_LOG_FUNCTIONS = ["info","debug","warning","error"]
+
+
+class DummyPrintLogger:
+  """
+  Just print anything passed to ["info","debug","warning","error"] 
+  """
+  def __getattribute__(self, __name: str):
+    if __name in PROXY_LOG_FUNCTIONS:
+      def _dummy(*a,**kw):
+        print(f"[{__name:10}] : ",*a,**kw)
+      return _dummy
+
+
+class LoggerWrapper:
+  _logger = None
+  do_indent = True
+  parent_reader = None
+
+  def __init__(self, parent_reader, logger=None):
+    self.parent_reader = parent_reader
+    self._logger = logger
+    #print(f"{self._logger}")
+
+  def position_as_string(self):
+    return f"0x{self.parent_reader._wire.get_pos():08X} : "  
+  
+  def indent_str(self):
+    if self.do_indent:
+      return '  ' * self.parent_reader._struct_depth
+    else:
+      return ' '
+    
+  
+  def __getattr__(self, __name: str):
+    #print(f"{self._logger=}")
+
+    def _make_proxy_func(func):
+      def _proxy_call(arg):
+        func(f"{self.position_as_string()}{self.indent_str()} {arg}")
+      return _proxy_call
+
+    if __name in PROXY_LOG_FUNCTIONS:
+      if self._logger:
+        return _make_proxy_func( getattr(self._logger, __name) )
+      else:
+        print('No logger')
+
+
+
 class MagicStructReaderScope:
   def __init__(self, parent, obj, comment=''):
     self.parent = parent
@@ -337,68 +402,20 @@ class MagicStructReaderScope:
       self.comment + " // " + comment
   
   def __enter__(self):
-    self.parent.ctx_logger.log_dbg(f" >BEGIN> {self.comment}")
+    self.parent.logger.debug(f" >>>> {self.comment}")
     self.parent._struct_depth += 1
     
   def __exit__(self, *a, **kw):
     self.parent._struct_depth -= 1
-    self.parent.ctx_logger.log_dbg(f" <END< {self.comment}")
+    self.parent.logger.debug(f" <<<< {self.comment}")
     self.parent.end_item(*a, **kw)
     
     
-class DummyPrintLogger:
-  def __getattribute__(self, __name: str):
-    def _dummy(*a,**kw):
-      print(f"{__name:10} : ",*a,**kw)
-    return _dummy
-
-class StructureContextLogger:
-  """ 
-  another abstraction layer.
-  will log current position of cursor while paring  binary data
-  `logger` object need to have info,debug and warning methods 
-  if `logger` is None -> no logging 
-  
-  """
-  stay_silent = False
-  do_indent = True 
-  
-  def __init__(self, struct_reader, logger=None):
-    self.parent = struct_reader
-    if logger:
-      self.logger = logger 
-    else:
-      self.logger = DummyPrintLogger()
-    
-  def position_as_string(self):
-    return f"0x{self.parent._wire.get_pos():08X} : "  
-
-  def indent_str(self):
-    if self.do_indent:
-      return '  ' * self.parent._struct_depth
-    else:
-      return ' '
-  
-  def log_inf(self, msg):
-    if self.logger and not self.stay_silent:
-      self.logger.info( self.position_as_string() + self.indent_str() + msg)
-
-  def log_dbg(self, msg):
-    if self.logger and not self.stay_silent:
-      self.logger.debug( self.position_as_string() + self.indent_str()  + msg)
-
-  def log_wrn(self, msg):
-    if self.logger and not self.stay_silent:
-      self.logger.warning( self.position_as_string() + self.indent_str()  + msg)
-
-  def log_err(self, msg):
-    if self.logger and not self.stay_silent:
-      self.logger.error( self.position_as_string() + self.indent_str()  + msg)
 
 
 class StructureReader:
   """
-    Implements reading of basic nested structures/collections such as :
+    Implements reading of basic (nested) structures/collections such as :
       - objects/dicts 
       - lists/arrays 
     
@@ -411,16 +428,18 @@ class StructureReader:
   _last_format = None
   _current_item = None
   _silent = False
-  ctx_logger = None
+  _data = b''
   main = None
-  
+  logger = None
+
   def __init__(self, wire: Wire, logger=None):
     self._wire = wire
     self._item_stack = list()
     self._names_stack = list()
     self._item_stack.append(StructItemLIST(pos=self._wire.get_pos())) # root element
-    self.ctx_logger = StructureContextLogger(struct_reader=self, logger=logger)
-    
+    self.logger = LoggerWrapper(parent_reader=self, logger=logger)
+    #self.ctx_logger = StructureContextLogger(struct_reader=self, logger=logger)
+  
     # install hooks ;
     wire.install_hook(HOOK_PRE_READ,  self._pre_read)
     wire.install_hook(HOOK_POST_READ, self._post_read)
@@ -436,15 +455,20 @@ class StructureReader:
     return n  
 
   def _post_read(self, data):
+    self.logger.debug("DataItem read")
     self._current_item.raw = data
     self._append_to_current(self._current_item)
     self._current_item = None
+    # TODO: make conditional flag to not to save raw data stream
+    self._data += data 
     return data
     
   def will_read(self, item_name):
+    # TODO: this could take list of strings and add the to the stack of names 
     self._names_stack.append(item_name)
     
   def _try_get_name(self):
+    # TODO: should stack-of-names be FIFO or LIFO  ?
     if len(self._names_stack) > 0:
       return self._names_stack[-1]
     else:
@@ -454,23 +478,29 @@ class StructureReader:
   def start_object(self, name='Unnamed', info='', comment=''):
     obj = StructItemOBJECT(name=name, pos=self._wire.get_pos(), info=info)
     self._push_item(obj)
-    self.ctx_logger.log_inf(f"START object : {name} ")
+    self.logger.info(f"START object : {name} ")
     return MagicStructReaderScope(self, obj, comment)
  
   def start_list(self, comment=''):
     obj = StructItemLIST(pos=self._wire.get_pos())
     self._push_item(obj)
-    self.ctx_logger.log_inf(f"START list")
+    self.logger.info(f"START list")
     return MagicStructReaderScope(self, obj, comment)
   
   def _append_to_current(self, o):
     top = self.last_item()
     if type(top) == StructItemOBJECT:
-      assert len(self._names_stack)>0, f"Need field name for property (object:{top.name})!"
-      name = self._names_stack.pop()
-      self.ctx_logger.log_inf(f"[+] field: {name}")
+      # Object - requred item name OR will be automatically generated 
+      name = f'item_{len(top._items):05}' 
+      if len(self._names_stack)>0:
+        name = self._names_stack.pop()
+      else:
+        self.logger.warning(f'!!! No names on stack ! will auto-generate one : {name}')
+      #assert len(self._names_stack)>0, f"Need field name for property (object:{top.name})!"
+      self.logger.info(f"[+] object field: {name}")
       top.add( name, o)
     elif type(top) == StructItemLIST:
+      self.logger.info("[+] list item ")
       top.add( o )
     else:
       raise Exception("OMG !")
@@ -484,36 +514,40 @@ class StructureReader:
   
   def end_item(self, exception_type, exception_value, exception_traceback): 
     # called when exiting scope
+    self.logger.info("END item")
     top = self._item_stack.pop()
     self.last_item().size += top.size
+    if exception_type is None:
+      return
     
-    if exception_type is not None:
-      import traceback
-      self.ctx_logger.log_err(f"  ** EXCEPTION ** ")
-      self.ctx_logger.log_err(f"ERROR at {self.last_item().__class__.__name__}")
-      for item in self._item_stack:
-        self.ctx_logger.log_err(item.__class__.__name__)
+    ## HANDLE un-clean end  
+    import traceback
+    self.logger.error(f"  ** EXCEPTION ** ")
+    self.logger.error(f"ERROR at {self.last_item().__class__.__name__}")
+    for item in self._item_stack:
+      self.logger.error(item.__class__.__name__)
+  
+    self.logger.error(f"-> type:{exception_type} : value:{exception_value}")
+    self.logger.error(f"==> REASON:{0}",traceback.extract_tb(exception_traceback))
     
-      self.ctx_logger.log_err(f"-> type:{exception_type} : value:{exception_value}")
-      self.ctx_logger.log_err(f"==> REASON:{0}",traceback.extract_tb(exception_traceback))
-      
-      raise Exception('DIE')
-    
+    raise Exception('DIE')
     
 
-  def get_struct(self):
-    # dump root element
-    s = self._item_stack[0].dump()
-    return dict(
-      struct = s,
-      data = self._wire.dump().hex()
-    )
+  def get_root_element(self):
+    return self._item_stack[0]
+  
+  def get_data(self):
+    return self._data
+
+
+
+
 
   def output_imHex(self):
     parts = []
     tmp = self._item_stack[0]
     
-    COUNTER = RefCounter()
+    COUNTER = IncrementalNameGenerator()
     imhex_translate = {
       '>h' : 'u16',
     }
@@ -570,57 +604,24 @@ class StructureReader:
     pass
 
 
+def structure_to_html_viewer(reader):
+  return dict(
+    struct = reader.get_root_element().dump(),
+    data = reader._data.hex(),
+  )
 
-def yaml_dump(self,obj):
+def structure_to_json(reader):
+  import json 
+  root = reader.get_root_element()
+  return json.dumps(root.dump())
+
+def structure_to_yaml(reader):
   import yaml
+  root = reader.get_root_element()
   yaml.add_representer(OrderedDict, lambda dumper, data: dumper.represent_mapping('tag:yaml.org,2002:map', data.items()))
-  return yaml.dump(obj, default_flow_style=False)
-
-
-
+  return yaml.dump(root.dump(), default_flow_style=False)
 
 
 
 if __name__ == '__main__':
-  
-  def _read_fnc(args):
-    print("HOOK PRE-READ ! :", args)
-    return args
-  
-  def _wr_fnc(arg):
-    print("WRITE HOOK:",arg)
-    return arg
-  
-  wire = Wire(from_bytes=b'')
-  wire.install_hook(HOOK_PRE_WRITE, _wr_fnc)
-  wire.write(b'test')
-  wire.write_word(0x1234)
-  wire.write_fmt("I",0x31337)
-  
-  tmp = wire.dump()
-  
-  wire = Wire(from_bytes=tmp)
-  wire.install_hook(HOOK_PRE_READ, _read_fnc )
-  assert b'test'  == wire.readn(4)
-  assert 0x1234   == wire.read_word()
-  assert 0x31337  == wire.read_fmt("I")
-  print("OK!")
-  
-  
-  wire = Wire(from_bytes=b'test112233')
-  r = StructureReader(wire)
-  with r.start_object():
-    r.will_read("test_string")
-    wire.readn(4)
-    r.will_read("items")
-    with r.start_list():
-      wire.read_word()
-      wire.read_dword()
-  print(" --- PASTE THAT TO HTML VIEWER --- ")
-  import json
-  print(
-    json.dumps(
-      r.get_struct()
-    )
-  )
-  
+  print("Hello there")

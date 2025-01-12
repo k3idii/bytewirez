@@ -587,14 +587,18 @@ def structure_to_html_viewer(st):
   )
 
 
-def custom_json_serializer(st):
+def custom_json_serializer(st,f=None):
   import json
   def custom_dumper(obj):
       try:
           return obj.__json__()
       except:
           return obj.__dict__
-  return json.dumps(st, default=custom_dumper)
+  if f is None:
+    return json.dumps(st, default=custom_dumper)
+  else:
+    return json.dump(st, f, default=custom_dumper)
+
 
 def structure_to_yaml(reader):
   import yaml

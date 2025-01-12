@@ -364,7 +364,6 @@ class MagicProxyObject:
     self._parent = parent
 
   def __getattr__(self, __name: str):
-    print(f"GETATTR {__name}")
     if __name.startswith("start_"):
       return getattr(self._parent,__name)
     return getattr(self._parent._wire,__name)
@@ -378,13 +377,13 @@ class StructureReader:
 
 
   """
+  ## TODO: add structure writer. same stuff
   _bytes_so_far = 0
   _item_stack = None
   _struct_depth = 0
   _names_stack = None
   _last_format = None
   _current_item = None
-  _silent = False
   _data = b""
   main = None
 
@@ -407,9 +406,6 @@ class StructureReader:
     wire.install_hook(HOOK_PRE_READ,  self._pre_read)
     wire.install_hook(HOOK_POST_READ, self._post_read)
     wire.install_hook(HOOK_FMT_READ,  self._fmt_read)
-
-
-
 
   def _fmt_read(self, fmt):
     self._last_format = fmt
@@ -594,7 +590,6 @@ def structure_to_html_viewer(st):
 def custom_json_serializer(st):
   import json
   def custom_dumper(obj):
-      print("LOOKUP", obj)
       try:
           return obj.__json__()
       except:

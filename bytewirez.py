@@ -6,7 +6,8 @@ import os
 import struct
 from typing import OrderedDict
 
-
+import logging
+logger = logging.getLogger(__name__)
 
 ENDIAN_BIG    = ">"
 ENDIAN_LITTLE = "<"
@@ -259,7 +260,7 @@ class Wire:
 
 
 
-class BaseItemInterface:
+class StructItemAbstract:
   pos :int = 0
   size :int = 0
   kind = None
@@ -269,17 +270,32 @@ class BaseItemInterface:
       setattr(self, k, v)
 
   def _dump_basic(self):
-    result = OrderedDict()
+    result = dict()
     result["$TYPE"] = self.kind
     result["$POS"] = self.pos
     result["$SIZE"] = self.size
     return result
 
+class DataItem(StructItemAbstract):
+  raw = b""
+  fmt = None
+  kind = "DATA"
 
-class StructItemOBJECT(BaseItemInterface):
+  def __json__(self):
+    result = self._dump_basic()
+    if self.fmt is not None:
+      result["format"] = self.fmt
+      tmp =struct.unpack(self.fmt, self.raw)
+      if len(tmp)==1:
+        tmp = tmp[0]
+      result["data_fmt"] = tmp
+    result["data_hex"] = self.raw.hex()
+    return result
+  
+
+class StructItemOBJECT(StructItemAbstract):
   _items = None
-  name = "UNNAMED"
-  info = None
+  class_name = None
   kind = "OBJECT"
 
   def __init__(self, **kwargs) -> None:
@@ -288,24 +304,18 @@ class StructItemOBJECT(BaseItemInterface):
 
   def add(self, name, item):
     self.size += item.size
-    self._items.append([name, item])
+    self._items.append({name: item})
 
-  def dump(self):
+  def __json__(self):
     result = self._dump_basic()
-    result["$NAME"] = self.name
-    if self.info:
-      result["$INFO"] = self.info
-    f = []
-    for item in self._items:
-      f.append(item[0])
-      result[item[0]]=item[1].dump()
-    result["$ORDER"] = f
+    if self.class_name:
+      result["$CLASS"] = self.name
+    result['$FIELDS'] = self._items
     return result
-    #return OrderedDict( [x.name, x.dump()] for  x in src )
 
 
 
-class StructItemLIST(BaseItemInterface):
+class StructItemLIST(StructItemAbstract):
   _items = None
   kind = "LIST"
 
@@ -317,88 +327,16 @@ class StructItemLIST(BaseItemInterface):
     self.size += item.size
     self._items.append(item)
 
-  def dump(self):
+  def __json__(self):
     result = self._dump_basic()
-    result["items"] = [item.dump() for item in self._items]
-    return result
-
-
-class DataItem(BaseItemInterface):
-  raw = b""
-  fmt = None
-  kind = "DATA"
-
-  def dump(self):
-    result = self._dump_basic()
-    if self.fmt is not None:
-      result["format"] = self.fmt
-      tmp =struct.unpack(self.fmt, self.raw)
-      if len(tmp)==1:
-        tmp = tmp[0]
-      result["data_fmt"] = tmp
-    result["data_hex"] = self.raw.hex()
+    result["items"] =  self._items 
     return result
 
 
 
 
 
-
-PROXY_LOG_FUNCTIONS = ["info","debug","warning","error"]
-
-
-class DummyPrintLogger:
-  """
-  Just print anything passed to ["info","debug","warning","error"]
-  Can be used when no real logger class is available :)
-  """
-  def __getattribute__(self, __name: str):
-    if __name in PROXY_LOG_FUNCTIONS:
-      def _dummy(*a,**kw):
-        print(f"[{__name:10}] : ",*a,**kw)
-      return _dummy
-
-
-class LoggerWrapper:
-  """
-    Add indent and current strem offset to logged messages
-  """
-  _logger = None
-  do_indent = True
-  parent_reader = None
-
-  def __init__(self, parent_reader, logger=None):
-    self.parent_reader = parent_reader
-    self._logger = logger
-    #print(f"{self._logger}")
-
-  def position_as_string(self):
-    return f"0x{self.parent_reader._wire.get_pos():08X} : "
-
-  def indent_str(self):
-    if self.do_indent:
-      return "  " * self.parent_reader._struct_depth
-    else:
-      return " "
-
-
-  def __getattr__(self, __name: str):
-    #print(f"{self._logger=}")
-
-    def _make_proxy_func(func):
-      def _proxy_call(arg):
-        func(f"{self.position_as_string()}{self.indent_str()} {arg}")
-      return _proxy_call
-
-    if __name in PROXY_LOG_FUNCTIONS:
-      if self._logger:
-        return _make_proxy_func( getattr(self._logger, __name) )
-      else:
-        print("No logger")
-
-
-
-class MagicStructReaderScope:
+class MagicStructReaderContextManager:
   """
   Used to provide context-manager for StructureReader 
   """
@@ -410,16 +348,27 @@ class MagicStructReaderScope:
       self.comment + " // " + comment
 
   def __enter__(self):
-    self.parent.logger.debug(f" >>>> {self.comment}")
+    logger.debug(f" >>>> {self.comment}")
     self.parent._struct_depth += 1
 
   def __exit__(self, *a, **kw):
     self.parent._struct_depth -= 1
-    self.parent.logger.debug(f" <<<< {self.comment}")
+    logger.debug(f" <<<< {self.comment}")
     self.parent.end_item(*a, **kw)
 
 
+class MagicProxyObject:
+  _parent = None 
 
+  def __init__(self, parent):
+    self._parent = parent
+
+  def __getattr__(self, __name: str):
+    print(f"GETATTR {__name}")
+    if __name.startswith("start_"):
+      return getattr(self._parent,__name)
+    return getattr(self._parent._wire,__name)
+  
 
 class StructureReader:
   """
@@ -438,24 +387,29 @@ class StructureReader:
   _silent = False
   _data = b""
   main = None
-  logger = None
 
-  def __init__(self, wire: Wire, logger=None):
+
+  def __init__(self, wire: Wire):
     self._wire = wire
     self._item_stack = list()
     self._names_stack = list()
+    #self._item_stack.append(
+    #  StructItemLIST(
+    #    pos=self._wire.get_pos()
+    #  )
+    #) # root element
+
     self._item_stack.append(
-      StructItemLIST(
-        pos=self._wire.get_pos()
-      )
-    ) # root element
-    self.logger = LoggerWrapper(parent_reader=self, logger=logger)
-    #self.ctx_logger = StructureContextLogger(struct_reader=self, logger=logger)
+      StructItemOBJECT(name="MAIN", pos=self._wire.get_pos())
+    )
 
     # install hooks ;
     wire.install_hook(HOOK_PRE_READ,  self._pre_read)
     wire.install_hook(HOOK_POST_READ, self._post_read)
     wire.install_hook(HOOK_FMT_READ,  self._fmt_read)
+
+
+
 
   def _fmt_read(self, fmt):
     self._last_format = fmt
@@ -467,7 +421,7 @@ class StructureReader:
     return n
 
   def _post_read(self, data):
-    self.logger.debug("DataItem read")
+    logger.debug("DataItem read")
     self._current_item.raw = data
     self._append_to_current(self._current_item)
     self._current_item = None
@@ -475,9 +429,17 @@ class StructureReader:
     self._data += data
     return data
 
-  def will_read(self, item_name):
+
+  def field(self, name):
+    self.will_read(name)
+    return MagicProxyObject(self)
+  
+
+  # that is low leve API
+  def will_read(self, *names):
     # TODO: this could take list of strings and add the to the stack of names
-    self._names_stack.append(item_name)
+    for item in names[::-1]:
+      self._names_stack.append(item)
 
   def _try_get_name(self):
     # TODO: should stack-of-names be FIFO or LIFO  ?
@@ -487,17 +449,17 @@ class StructureReader:
     return ""
 
 
-  def start_object(self, name="Unnamed", info="", comment=""):
-    obj = StructItemOBJECT(name=name, pos=self._wire.get_pos(), info=info)
+  def start_object(self, class_name="", comment=""):
+    obj = StructItemOBJECT(class_name=class_name, pos=self._wire.get_pos())
     self._push_item(obj)
-    self.logger.info(f"START object : {name} ")
-    return MagicStructReaderScope(self, obj, comment)
+    logger.debug(f"START object")
+    return MagicStructReaderContextManager(self, obj, comment)
 
   def start_list(self, comment=""):
     obj = StructItemLIST(pos=self._wire.get_pos())
     self._push_item(obj)
-    self.logger.info("START list")
-    return MagicStructReaderScope(self, obj, comment)
+    logger.debug("START list")
+    return MagicStructReaderContextManager(self, obj, comment)
 
   def _append_to_current(self, o):
     top = self.last_item()
@@ -510,12 +472,12 @@ class StructureReader:
       if len(self._names_stack)>0:
         name = self._names_stack.pop()
       else:
-        self.logger.warning(f"!!! No names on stack ! will auto-generate one : {name}")
+        logger.warning(f"!!! No names on stack ! will auto-generate one : {name}")
       #assert len(self._names_stack)>0, f"Need field name for property (object:{top.name})!"
-      self.logger.info(f"[+] object field: {name}")
+      logger.debug(f"[+] object field: {name}")
       top.add( name, o)
     if parent_type == StructItemLIST:
-      self.logger.info("[+] list item ")
+      logger.debug("[+] list item ")
       top.add( o )
     #else:
     #  raise Exception("OMG !")
@@ -529,7 +491,7 @@ class StructureReader:
 
   def end_item(self, exception_type, exception_value, exception_traceback):
     # called when exiting scope
-    self.logger.info("END item")
+    logger.debug("END item")
     top = self._item_stack.pop()
     self.last_item().size += top.size
     if exception_type is None:
@@ -537,13 +499,13 @@ class StructureReader:
 
     ## HANDLE un-clean end
     import traceback
-    self.logger.error("  ** EXCEPTION ** ")
-    self.logger.error(f"ERROR at {self.last_item().__class__.__name__}")
+    logger.error("  ** EXCEPTION ** ")
+    logger.error(f"ERROR at {self.last_item().__class__.__name__}")
     for item in self._item_stack:
-      self.logger.error(item.__class__.__name__)
+      logger.error(item.__class__.__name__)
 
-    self.logger.error(f"-> type:{exception_type} : value:{exception_value}")
-    self.logger.error(f"==> REASON:{0}",traceback.extract_tb(exception_traceback))
+    logger.error(f"-> type:{exception_type} : value:{exception_value}")
+    logger.error(f"==> REASON:{0}",traceback.extract_tb(exception_traceback))
 
     raise exception_value # re-raise
 
@@ -620,16 +582,24 @@ class StructureReader:
     pass
 
 
-def structure_to_html_viewer(reader):
-  return dict(
-    struct = reader.get_root_element().dump(),
-    data = reader.get_data().hex(),
+def structure_to_html_viewer(st):
+  return custom_json_serializer(
+      dict(
+      data_hex = st.get_data().hex(),
+      struct = st.get_root_element(),
+    )
   )
 
-def structure_to_json(reader):
+
+def custom_json_serializer(st):
   import json
-  root = reader.get_root_element()
-  return json.dumps(root.dump())
+  def custom_dumper(obj):
+      print("LOOKUP", obj)
+      try:
+          return obj.__json__()
+      except:
+          return obj.__dict__
+  return json.dumps(st, default=custom_dumper)
 
 def structure_to_yaml(reader):
   import yaml

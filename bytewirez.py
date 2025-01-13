@@ -4,7 +4,6 @@
 import io
 import os
 import struct
-from typing import OrderedDict
 from functools import wraps
   
 
@@ -688,7 +687,7 @@ def custom_json_serializer(st,into_file=None):
 def structure_to_yaml(reader):
   import yaml
   root = reader.get_root_element()
-  yaml.add_representer(OrderedDict, lambda dumper, data: dumper.represent_mapping("tag:yaml.org,2002:map", data.items()))
+  #yaml.add_representer(OrderedDict, lambda dumper, data: dumper.represent_mapping("tag:yaml.org,2002:map", data.items()))
   return yaml.dump(root.dump(), default_flow_style=False)
 
 

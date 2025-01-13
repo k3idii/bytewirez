@@ -36,3 +36,5 @@ print(
 )
 
 print(" --- --- --- --- ---")
+
+print( st.output_imHex() )

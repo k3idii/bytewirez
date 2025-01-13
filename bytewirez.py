@@ -608,7 +608,7 @@ class StructureReader:
     }
 
     def _imhex_obj(el):
-      name = internal_counter.next("OBJECT") + "__" + el.name
+      name = internal_counter.next("OBJECT")
       tmp=[]
       tmp.append(f"struct {name} {{ // at {el.pos}")
       for prop, val in el._items:

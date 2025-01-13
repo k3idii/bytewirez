@@ -649,12 +649,13 @@ class StructureReader:
     pass
 
 
-def structure_to_html_viewer(st):
+def structure_to_html_viewer(st, into_file):
   return custom_json_serializer(
     {
       "data_hex": st.get_data().hex(), 
       "struct": st.get_root_element()
-    }
+    }, 
+    into_file=into_file
   )
 
 

@@ -1,18 +1,16 @@
 """
- TODO: docstring here 
+ TODO: docstring here
 """
 import io
 import os
 import struct
 from functools import wraps
-  
 
 import logging
 logger = logging.getLogger(__name__)
 
 ENDIAN_BIG    = ">"
 ENDIAN_LITTLE = "<"
-
 
 class IncrementalNameGenerator:
   count = 0
@@ -53,21 +51,20 @@ def make_hookable(func):
     #for hook in self._post_hooks:
     for hook in getattr(self, "_post_hooks",{}).get(f_name,[]):
       result = hook(result)
-    return result 
+    return result
 
   setattr(_new_func,'__is_hookable', True)
   return _new_func
 
 
 def hexdump(
-    src: bytes, 
-    bytes_per_line: int = 16, 
+    src: bytes,
+    bytes_per_line: int = 16,
     hex_per_group: int = 0,
-    char_per_group: int = 0, 
+    char_per_group: int = 0,
     offset: int = 0,
     subst: str = '.'
   ):
-  
   lines = []
   max_addr_len = len(hex(len(src)))
   if hex_per_group == 0:
@@ -98,7 +95,7 @@ def hexdump(
       if chr_idx == 0:
         chr_idx = char_per_group
         printable += ' '
-      hex_str += "{:02X}".format(c)
+      hex_str += f"{c:02X}"
       printable += chr(c) if (c <= 127 and c >=32) else subst
       hex_idx -= 1
       chr_idx -= 1
@@ -106,7 +103,6 @@ def hexdump(
     # Pad out the line to fill up the line to take up the right amount of space to line up with a full line.
     hex_str = hex_str.ljust(hex_pad)
     printable = printable.ljust(str_pad)
-    
     lines.append(f'0x{(offset+addr):0{max_addr_len}X} | {hex_str} | {printable} |')
   return '\n'.join(lines)
 
@@ -135,20 +131,17 @@ class Wire:
     else:
       print("Initialized with empty bytesIO")
       self._obj = io.BytesIO(b"")
-    
     self._pos_stack = list()
-    
     self._pre_hooks = {}
     self._post_hooks = {}
     for key in dir(self):
       if getattr(getattr(self, key), '__is_hookable',None):
         self._pre_hooks[key] = []
         self._post_hooks[key] = []
-    
     self.initialize()
 
   def initialize(self): # to make override less painfull without super()
-    pass 
+    pass
 
   def install_hook(self, func, pre=None, post=None):
     name = func.__func__.__name__
@@ -158,12 +151,12 @@ class Wire:
       self._post_hooks[name].append(post)
 
   def hexdump(self, size=128, start_at=None):
-    # if no params  - dump from here to the end 
+    # if no params  - dump from here to the end
     blob = self.peek(size, at=start_at)
     return hexdump(blob)
 
   def dump(self):
-    # TODO: check if we are operating on BytesIO or file provided as FD 
+    # TODO: check if we are operating on BytesIO or file provided as FD
     return self._obj.getvalue()
 
   def set_endian(self, e):
@@ -181,7 +174,7 @@ class Wire:
   def peekn(self, size):
     """ Peek exacly n-bytes """
     b = self.peek(size)
-    if len(b) != n:
+    if len(b) != size:
       raise Exception(f"Fail to peek {size} bytes , got {len(b)}")
     return b
 
@@ -196,9 +189,9 @@ class Wire:
     self.pushd()
     if at is not None:
       if at <0:
-        self._obj.seek(at, os.SEEK_CUR) 
+        self._obj.seek(at, os.SEEK_CUR)
       else:
-        self._obj.seek(at, os.SEEK_SET) 
+        self._obj.seek(at, os.SEEK_SET)
     value = self._obj.read(size)
     self.popd()
     return value
@@ -341,7 +334,7 @@ class StructItemAbstract:
       setattr(self, k, v)
 
   def _dump_basic(self):
-    result = dict()
+    result = {}
     result["TYPE"] = self.kind
     result["POS"] = self.pos
     result["SIZE"] = self.size
@@ -363,45 +356,44 @@ class DataItem(StructItemAbstract):
       result["data_fmt"] = tmp
     result["data_hex"] = self.raw.hex()
     return result
-  
 
 class StructItemOBJECT(StructItemAbstract):
-  _items = None
+  items = None
   class_name = None
   kind = "OBJECT"
 
   def __init__(self, **kwargs) -> None:
     super().__init__(**kwargs)
-    self._items = []
+    self.items = []
 
   def add(self, name, item):
     self.size += item.size
-    self._items.append([name, item])
+    self.items.append([name, item])
 
   def __json__(self):
     result = self._dump_basic()
     if self.class_name:
       result["CLASS"] = self.class_name
-    result['FIELDS'] = self._items
+    result['FIELDS'] = self.items
     return result
 
 
 
 class StructItemLIST(StructItemAbstract):
-  _items = None
+  items = None
   kind = "LIST"
 
   def __init__(self, **kwargs) -> None:
     super().__init__(**kwargs)
-    self._items = []
+    self.items = []
 
   def add(self, item):
     self.size += item.size
-    self._items.append(item)
+    self.items.append(item)
 
   def __json__(self):
     result = self._dump_basic()
-    result["ITEMS"] =  self._items 
+    result["ITEMS"] =  self.items
     return result
 
 
@@ -410,7 +402,7 @@ class StructItemLIST(StructItemAbstract):
 
 class MagicStructReaderContextManager:
   """
-  Used to provide context-manager for StructureReader 
+  Used to provide context-manager for StructureReader
   """
   def __init__(self, parent, obj, comment=""):
     self.parent = parent
@@ -430,7 +422,7 @@ class MagicStructReaderContextManager:
 
 
 class MagicProxyObject:
-  _parent = None 
+  _parent = None
 
   def __init__(self, parent):
     self._parent = parent
@@ -439,7 +431,6 @@ class MagicProxyObject:
     if __name.startswith("start_"):
       return getattr(self._parent,__name)
     return getattr(self._parent._wire,__name)
-  
 
 class StructureReader:
   """
@@ -463,8 +454,8 @@ class StructureReader:
 
   def __init__(self, wire: Wire):
     self._wire = wire
-    self._item_stack = list() # queue ?
-    self._names_stack = list() # queue ?
+    self._item_stack = []   # queue ?
+    self._names_stack = []  # queue ?
 
     # TODO: should we start with list or object ?
     self._item_stack.append(
@@ -472,24 +463,23 @@ class StructureReader:
     )
 
     wire.install_hook(
-      wire.read, 
+      wire.read,
       pre=self._hook_pre_read,
       post=self._hook_post_read,
     )
-    
     wire.install_hook(
-      wire.read_fmt, 
+      wire.read_fmt,
       pre=self._hook_pre_fmt_read,
       post=self._hook_post_fmt_read,
     )
 
   def _hook_pre_read(self, *a, **kw):
-    size = a[0] # unpack args 
+    size = a[0] # unpack args
     logger.debug(f"HOOK PRE-READ {size}")
     self._current_item = DataItem(pos=self._wire.get_pos(), size=size, fmt=self._last_format)
-    self._last_format = None 
+    self._last_format = None
     return None
-  
+
   def _hook_post_read(self, result):
     ''' raw read bytes '''
     assert self._current_item is not None, "current_item is none. that should not happend (check pre-read hook)"
@@ -497,9 +487,9 @@ class StructureReader:
     self._current_item.raw = result
     self._append_to_current(self._current_item)
     self._current_item = None
-    self._data += result 
+    self._data += result
     return result
-    
+
 
   def _hook_pre_fmt_read(self, *a, **kw):
     self._waiting_for_fmt = True
@@ -507,7 +497,7 @@ class StructureReader:
     logger.debug(f"HOOK PRE-FMT-READ {fmt}")
     self._last_format = fmt
     return None
-  
+
   def _hook_post_fmt_read(self, result):
     self._waiting_for_fmt = False
     logger.debug(f"HOOK POST-FMT-READ {result}")
@@ -545,7 +535,7 @@ class StructureReader:
     #print(parent_type)
     if parent_type == StructItemOBJECT:
       # Object - requred item name OR will be automatically generated
-      name = f"item_{len(top._items):05}"
+      name = f"item_{len(top.items):05}"
       if len(self._names_stack)>0:
         name = self._names_stack.pop()
       else:
@@ -611,7 +601,7 @@ class StructureReader:
       name = internal_counter.next("OBJECT")
       tmp=[]
       tmp.append(f"struct {name} {{ // at {el.pos}")
-      for prop, val in el._items:
+      for prop, val in el.items:
         item_type,n = _imhex_parse(val)
         if n == 1:
           tmp.append(f"  {item_type} {prop} ; ")
@@ -625,7 +615,7 @@ class StructureReader:
       name = internal_counter.next("ARRAY")
       tmp = []
       tmp.append(f"struct {name} {{ // at {el.pos}")
-      for i,item in enumerate(el._items):
+      for i,item in enumerate(el.items):
         item_type,n = _imhex_parse(item)
         if n == 1:
           tmp.append(f"  {item_type}  ITEM_{i};")
@@ -661,10 +651,10 @@ class StructureReader:
 
 def structure_to_html_viewer(st):
   return custom_json_serializer(
-    dict(
-      data_hex = st.get_data().hex(),
-      struct = st.get_root_element(),
-    )
+    {
+      "data_hex": st.get_data().hex(), 
+      "struct": st.get_root_element()
+    }
   )
 
 
@@ -673,15 +663,11 @@ def custom_json_serializer(st,into_file=None):
 
   def custom_dumper(obj):
     print("DUMP", obj)
-    #try:
     return obj.__json__()
-    #except:
-    #  return 1 # return obj.__dict__
-
+  
   if into_file is None:
     return json.dumps(st, default=custom_dumper)
-  else:
-    return json.dump(st, into_file, default=custom_dumper)
+  return json.dump(st, into_file, default=custom_dumper)
 
 
 def structure_to_yaml(reader):

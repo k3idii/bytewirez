@@ -376,7 +376,7 @@ class StructItemOBJECT(StructItemAbstract):
 
   def add(self, name, item):
     self.size += item.size
-    self._items.append({name: item})
+    self._items.append([name, item])
 
   def __json__(self):
     result = self._dump_basic()

@@ -52,9 +52,10 @@ with r.start_list():
  
  ```
  
-
- Aaand the (ugly) html viewer (seriously, if anyone can make this stuff looks better ... )
  
+ ~Aaand the (ugly) html viewer (seriously, if anyone can make this stuff looks better ... )~
+ Thanks to [https://github.com/lukaszblacha], the viewer is a bit lett ugly
+
  ![image](https://user-images.githubusercontent.com/7603260/183519032-d46a3533-4750-4a33-b635-1a21f2e4cb19.png)
 
  

@@ -117,7 +117,7 @@ class Wire:
   """
   _obj = None
   _pos_stack = None
-  _endian = ">"
+  _endian = None
   _pre_hooks = None
   _post_hooks = None
 
@@ -162,6 +162,15 @@ class Wire:
   def set_endian(self, e):
     assert e in "><", "Endian should be > or <"
     self._endian = e
+    
+  def get_endian(self):
+    assert self._endian in "><", "Invalid endian or not set"
+    return self._endian
+
+  def fix_endian(self, fmt):
+    if fmt[0] not in "><" and self._endian:
+      return self._endian + fmt
+    return fmt
 
   def pushd(self):
     """ push current position on stack """
@@ -234,6 +243,7 @@ class Wire:
   @make_hookable
   def read_fmt(self, fmt, into_dict=None):
     """ Read using struct format """
+    fmt = self.fix_endian(fmt)
     sz = struct.calcsize(fmt)
     b = self.readn(sz)
     r = unpack_ex(fmt, b, into_dict)
@@ -241,6 +251,7 @@ class Wire:
 
   def peek_fmt(self, fmt, into_dict=None):
     """ Peek using struct format """
+    fmt = self.fix_endian(fmt)
     sz = struct.calcsize(fmt)
     b = self.peekn(sz)
     return unpack_ex(fmt, b, into_dict)
@@ -649,7 +660,7 @@ class StructureReader:
     pass
 
 
-def structure_to_html_viewer(st, into_file=None):
+def structure_to_html_viewer(st, into_file):
   return custom_json_serializer(
     {
       "data_hex": st.get_data().hex(), 

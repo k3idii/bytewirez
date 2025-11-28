@@ -1,1 +1,1 @@
-from bytewirez import *
+from .bytewirez import *

@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html>
 <head>
@@ -41,6 +40,7 @@
   function createElement(tag, attributes = {}, children = []) {
     const el = document.createElement(tag);
     Object.entries(attributes).forEach(([k, v]) => el.setAttribute(k, v));
+    if (typeof children === "string") children = [children];
     for (let c of children) {
       if (c !== null && c !== undefined) {
         el.appendChild(typeof c === "string" ? document.createTextNode(c) : c);
@@ -60,40 +60,71 @@
   const $struct = $("#struct");
   const $info = $("#info");
 
+  let nextId = 0;
+  const store = [];
 
-  function parseStruct(obj) {
-    switch (obj.TYPE) {
+  function validate({ TYPE, POS, SIZE, data_hex }) {
+    const errors = [];
+
+    if (TYPE === "DATA") {
+      const expected_hex = window.raw_object.data_hex?.substring(POS * 2).slice(0, SIZE * 2);
+      if (expected_hex && data_hex !== expected_hex) {
+        errors.push(`Hex value does not match, expected ${expected_hex}.`);
+      }
+      if (data_hex.length !== SIZE * 2) {
+        parsed.errors.push(`Invalid size, expected hex value to be ${SIZE}B`);
+      }
+    }
+
+    return errors;
+  }
+
+  function parseStruct(raw, name) {
+    const { TYPE, POS, SIZE, ...obj } = raw;
+    const parsed = {
+      TYPE, POS, SIZE,
+      ID: nextId++,
+      errors: validate(raw),
+    };
+
+    switch (TYPE) {
       case "DATA": {
         const { data_hex, ...data } = obj;
-        return { hex: data_hex, data, name: "data" };
+
+        Object.assign(parsed, {
+          data,
+          hex: data_hex,
+          name: name || "data",
+        });
+        break;
       }
       case "LIST": {
         const { ITEMS, ...data } = obj;
-        const items = ITEMS
-          .map(parseStruct)
-          .map((c, i) => ({ ...c, name: `item#${i}` }));
-        return {
+        const items = ITEMS.map(((item, i) => parseStruct(item, `item#${i}`)));
+        Object.assign(parsed, {
           data: { ...data, items },
           hex: items.map(f => f.hex).join(""),
-          name: "list"
-        };
+          name: name || "list"
+        });
+        break;
       }
       case "OBJECT": {
         const { FIELDS, ...data } = obj;
-        const fields = FIELDS.map(([name, data]) => ({
-          ...parseStruct(data),
-          name,
-        }));
-        return {
+        const fields = FIELDS.map(([name, data]) => parseStruct(data, name));
+        Object.assign(parsed, {
           data: { ...data, fields },
           hex: fields.map(f => f.hex).join(""),
-          name: "object"
-        }
+          name: name || "object"
+        });
+        break;
       }
       default: {
-        throw new Error(`Unknown type ${obj.TYPE}`);
+        throw new Error(`Unknown type ${TYPE}`);
       }
     }
+
+    store[parsed.ID] = parsed;
+    return store[parsed.ID];
   }
 
   function hexToText(hex) {
@@ -106,30 +137,26 @@
       .join("");
   }
 
-  function generateTree({ data, name }) {
-    switch (data.TYPE) {
+  function generateTree({ ID, TYPE, POS, SIZE, errors, data, name }) {
+    const attributes = { "data-id": ID };
+    const labelAttributes = {};
+    if (errors.length > 0) {
+      labelAttributes.class = "invalid";
+      labelAttributes.errors = errors.join(" | ");
+    }
+
+    switch (TYPE) {
       case "DATA": {
-        return $.li({
-          "data-offset": data.POS,
-          "data-size": data.SIZE,
-          "data-format": data.format || '',
-          "data-formatted": JSON.stringify(data.data_fmt || ''),
-        }, [name]);
+        return $.li(attributes, [$.span(labelAttributes, name)]);
       }
       case "LIST": {
-        return $.li({
-          "data-offset": data.POS,
-          "data-size": data.SIZE,
-        }, [`${name} []`, $.ul({}, data.items.map(generateTree))]);
+        return $.li(attributes, [$.span(labelAttributes, `${name} []`), $.ul({}, data.items.map(generateTree))]);
       }
       case "OBJECT": {
-        return $.li({
-          "data-offset": data.POS,
-          "data-size": data.SIZE,
-        }, [`${name} {}`, $.ul({}, data.fields.map(generateTree))]);
+        return $.li(attributes, [$.span(labelAttributes, `${name} {}`), $.ul({}, data.fields.map(generateTree))]);
       }
       default: {
-        throw new Error(`Unknown type ${data.TYPE}`);
+        throw new Error(`Unknown type ${TYPE}`);
       }
     }
   }
@@ -138,8 +165,13 @@
     e?.preventDefault();
     const raw = JSON.parse(inputdata.value);
     window.raw_object = raw;
+    inputdata.value = JSON.stringify(raw, null, 2);
+    inputdata.blur();
 
     const struct = parseStruct(raw.struct);
+    if (raw.data_hex && struct.hex !== raw.data_hex) {
+      struct.errors.push("Hex data does not match the input.");
+    }
     $hex.innerText = struct.hex;
     $txt.innerText = hexToText(struct.hex);
     $struct.innerText = "";
@@ -152,15 +184,6 @@
       loadStuff(e);
     }
   })
-
-  function parseDataset(dataset) {
-    return {
-      offset: parseInt(dataset.offset, 10),
-      size: parseInt(dataset.size, 10),
-      format: dataset.format,
-      formatted: dataset.formatted,
-    };
-  }
 
   function range(el, offset, size = 0) {
     const r = new Range();
@@ -179,18 +202,19 @@
 
   $struct.addEventListener("mouseout", () => highlight(0, 0));
   $struct.addEventListener("mouseover", ({ target }) => {
-    const meta = parseDataset(target?.dataset || {});
-    if (meta.size) {
-      highlight(meta.offset, meta.size);
+    const ID = parseInt(target?.closest("li").dataset.id, 10);
+    const meta = store[ID];
+    if (meta) {
+      highlight(meta.POS, meta.SIZE);
       const children = [
-        $.li({}, `offset: ${meta.offset}`),
-        $.li({}, `size: ${meta.size}`),
+        $.li({}, `offset: ${meta.POS}`),
+        $.li({}, `size: ${meta.SIZE}`),
       ];
 
-      if (meta.format) {
+      if (meta.data?.format) {
         children.push(
-          $.li({}, `format: ${meta.format}`),
-          $.li({},`data: ${meta.formatted}`)
+          $.li({}, `format: ${meta.data.format}`),
+          $.li({},`data: ${JSON.stringify(meta.data.data_fmt)}`)
         );
       }
 
@@ -224,6 +248,7 @@
     flex-direction: column;
 
     --highlight-color: #ED0;
+    --color-invalid: brown;
   }
 
   ul { list-style: none; padding: 0; position: relative; }
@@ -235,7 +260,7 @@
     gap: 8px;
     padding: 8px;
     grid-template:
-      "q q q" 100px
+      "q q q" 50px
       "s i i" 125px
       "s c h" 1fr
   }
@@ -243,7 +268,7 @@
   @media (orientation: portrait) {
     .container {
       grid-template:
-        "q" 100px
+        "q" 50px
         "s" 1fr 
         "c" auto
         "h" auto
@@ -258,11 +283,10 @@
 
   form#input {
     position: relative;
+    height: 50px;
+    z-index: 1;
+    transition: height 0.1s 0.2s;
     grid-area: q;
-
-    textarea {
-      padding: 0;
-    }
 
     button {
       position: absolute;
@@ -275,6 +299,10 @@
       box-shadow: 0 1px 2px #000A;
       cursor: pointer;
     }
+  }
+
+  form#input:has(textarea:focus) {
+    height: 50vh;
   }
 
   #inputdata {
@@ -304,6 +332,28 @@
   #struct li {
     padding: 0.5ch 0 0.5ch 0.5ch;
     position: relative;
+  }
+
+  .invalid {
+    position:relative;
+    display: block;
+  }
+
+  .invalid::before {
+    content: "❗";
+  }
+
+  .invalid:hover::after {
+    content: attr(errors);
+    position: absolute;
+    top: 100%;
+    left: 0;
+    background: var(--color-invalid);
+    padding: .2ch 1ch;
+    z-index: 1;
+    color: #fff;
+    line-height: 1.5;
+    pointer-events: none;
   }
 
   #struct > li li {

@@ -1,10 +1,12 @@
 """
- TODO: docstring here
+Bytewirez: A library for comfortable binary data reading, writing, and structure tracking.
 """
 import io
 import os
 import struct
 from functools import wraps
+from itertools import count
+from typing import Any, Dict, List, Optional, Tuple, Union, BinaryIO
 
 import logging
 logger = logging.getLogger(__name__)
@@ -12,49 +14,54 @@ logger = logging.getLogger(__name__)
 ENDIAN_BIG    = ">"
 ENDIAN_LITTLE = "<"
 
+
 class IncrementalNameGenerator:
-  count = 0
-  item_format = "{name}__{self.count}"
-  def __init__(self, start=0, item_format=None):
-    self.count = start
-    if item_format:
-      self.item_format = item_format
+    """Generates incremental names for items when a name is not provided."""
+    def __init__(self, start: int = 0, item_format: str = "{name}__{count}"):
+        self._count = count(start)
+        self.item_format = item_format
 
-  def next(self, name="ITEM"):
-    self.count += 1
-    return self.item_format.format(name=name, self=self)
+    def next(self, name: str = "ITEM") -> str:
+        return self.item_format.format(name=name, count=next(self._count))
 
 
-def unpack_ex(fmt, data, into=None):
-  parts = struct.unpack(fmt, data)
-  if not parts:
-    return None
-  if not into:
-    if len(parts) == 1:
-      return parts[0]
-    return parts
-  if len(parts) > len(into):
-    raise struct.error("unpack_ex: too many values unpacked !")
-  return dict((into[i], parts[i]) for i in range(len(parts)))
+def unpack_ex(fmt: str, data: bytes, into: Optional[List[str]] = None) -> Any:
+    """
+    Extended struct.unpack that can return a dictionary if 'into' is provided.
+    """
+    parts = struct.unpack(fmt, data)
+    if not parts:
+        return None
+    if not into:
+        return parts[0] if len(parts) == 1 else parts
+    
+    if len(parts) > len(into):
+        raise struct.error(f"unpack_ex: too many values unpacked ({len(parts)}) for names provided ({len(into)})!")
+    
+    return dict(zip(into, parts))
 
 
 def make_hookable(func):
-  f_name = func.__name__
-  @wraps(func)
-  def _new_func(self, *a,**kw):
-    #for hook in self._pre_hooks[f_name]:
-    for hook in getattr(self, "_pre_hooks",{}).get(f_name,[]):
-      tmp = hook(*a,**kw)
-      if tmp is not None:
-        a, kw = tmp
-    result = func(self, *a, **kw)
-    #for hook in self._post_hooks:
-    for hook in getattr(self, "_post_hooks",{}).get(f_name,[]):
-      result = hook(result)
-    return result
+    """Decorator to allow pre and post hooks for instance methods."""
+    f_name = func.__name__
 
-  setattr(_new_func,'__is_hookable', True)
-  return _new_func
+    @wraps(func)
+    def _new_func(self, *a, **kw):
+        pre_hooks = getattr(self, "_pre_hooks", {}).get(f_name, [])
+        for hook in pre_hooks:
+            tmp = hook(*a, **kw)
+            if tmp is not None:
+                a, kw = tmp
+        
+        result = func(self, *a, **kw)
+        
+        post_hooks = getattr(self, "_post_hooks", {}).get(f_name, [])
+        for hook in post_hooks:
+            result = hook(result)
+        return result
+
+    setattr(_new_func, '__is_hookable', True)
+    return _new_func
 
 
 def hexdump(
@@ -64,269 +71,253 @@ def hexdump(
     char_per_group: int = 0,
     offset: int = 0,
     subst: str = '.'
-  ):
-  lines = []
-  max_addr_len = len(hex(len(src)))
-  if hex_per_group == 0:
-    hex_per_group = bytes_per_line
-  if char_per_group == 0:
-    char_per_group = bytes_per_line
+) -> str:
+    """Returns a formatted hexdump string of the provided bytes."""
+    if not src:
+        return ""
 
-  hex_pad = bytes_per_line * 2 + int(bytes_per_line / hex_per_group) - ( 1 if bytes_per_line%hex_per_group==0 else 0 )
-  str_pad = bytes_per_line * 1 + int(bytes_per_line * 1 / char_per_group) - ( 1 if bytes_per_line%char_per_group==0 else 0 )
+    lines = []
+    max_addr_len = len(hex(len(src) + offset)) - 2 # estimate
+    max_addr_len = max(max_addr_len, 4)
 
-  for addr in range(0, len(src), bytes_per_line):
-    hex_str = ""
-    printable = ""
+    hex_per_group = hex_per_group or bytes_per_line
+    char_per_group = char_per_group or bytes_per_line
 
-    # The chars we need to process for this line
-    chars = src[addr : addr + bytes_per_line]
+    hex_pad = bytes_per_line * 2 + (bytes_per_line // hex_per_group) - (1 if bytes_per_line % hex_per_group == 0 else 0)
+    str_pad = bytes_per_line + (bytes_per_line // char_per_group) - (1 if bytes_per_line % char_per_group == 0 else 0)
 
-    hex_str = ''
-    printable = ''
+    for addr in range(0, len(src), bytes_per_line):
+        chars = src[addr : addr + bytes_per_line]
+        hex_parts = []
+        printable_parts = []
 
-    hex_idx = hex_per_group
-    chr_idx = char_per_group
+        for i in range(0, len(chars), hex_per_group):
+            chunk = chars[i : i + hex_per_group]
+            hex_parts.append("".join(f"{c:02X}" for c in chunk))
+        
+        for i in range(0, len(chars), char_per_group):
+            chunk = chars[i : i + char_per_group]
+            printable_parts.append("".join(chr(c) if 32 <= c <= 126 else subst for c in chunk))
 
-    for c in chars:
-      if hex_idx == 0:
-        hex_idx = hex_per_group
-        hex_str += ' '
-      if chr_idx == 0:
-        chr_idx = char_per_group
-        printable += ' '
-      hex_str += f"{c:02X}"
-      printable += chr(c) if (c <= 127 and c >=32) else subst
-      hex_idx -= 1
-      chr_idx -= 1
-
-    # Pad out the line to fill up the line to take up the right amount of space to line up with a full line.
-    hex_str = hex_str.ljust(hex_pad)
-    printable = printable.ljust(str_pad)
-    lines.append(f'0x{(offset+addr):0{max_addr_len}X} | {hex_str} | {printable} |')
-  return '\n'.join(lines)
+        hex_str = " ".join(hex_parts).ljust(hex_pad)
+        printable = " ".join(printable_parts).ljust(str_pad)
+        
+        lines.append(f'0x{(offset + addr):0{max_addr_len}X} | {hex_str} | {printable} |')
+    
+    return '\n'.join(lines)
 
 
 
 
 
 class Wire:
-  """
-  Class that delivers interface for comfortable reading/writing bytes.
-  This is overlay for already opened file (from_fd), BytesIO() or bytes().
-  """
-  _obj = None
-  _pos_stack = None
-  _endian = None
-  _pre_hooks = None
-  _post_hooks = None
+    """
+    Provides an interface for comfortable reading and writing of bytes.
+    Wraps a file-like object (BytesIO, file descriptor, etc.).
+    """
+    def __init__(
+        self,
+        from_fd: Optional[BinaryIO] = None,
+        from_bytes: Optional[bytes] = None,
+        from_string: Optional[str] = None
+    ):
+        if from_fd is not None:
+            self._obj = from_fd
+        elif from_bytes is not None:
+            self._obj = io.BytesIO(from_bytes)
+        elif from_string is not None:
+            self._obj = io.BytesIO(from_string.encode('utf-8'))
+        else:
+            logger.info("Initialized with empty BytesIO")
+            self._obj = io.BytesIO(b"")
+        
+        self._pos_stack: List[int] = []
+        self._endian: str = ENDIAN_BIG
+        self._pre_hooks: Dict[str, List] = {}
+        self._post_hooks: Dict[str, List] = {}
+        
+        self._post_init()
 
-  def __init__(self, from_fd=None, from_bytes=None, from_string=None):
-    if from_fd is not None:
-      self._obj = from_fd
-    elif from_bytes is not None:
-      self._obj = io.BytesIO(from_bytes)
-    elif from_string is not None:
-      self._obj = io.BytesIO(from_string.decode())
-    else:
-      print("Initialized with empty bytesIO")
-      self._obj = io.BytesIO(b"")
-    self._pos_stack = list()
-    self._pre_hooks = {}
-    self._post_hooks = {}
-    for key in dir(self):
-      if getattr(getattr(self, key), '__is_hookable',None):
-        self._pre_hooks[key] = []
-        self._post_hooks[key] = []
-    self.initialize()
+    @classmethod
+    def from_bytes(cls, b: bytes) -> 'Wire':
+        return cls(from_bytes=b)
 
-  def initialize(self): # to make override less painfull without super()
-    pass
-
-  def install_hook(self, func, pre=None, post=None):
-    name = func.__func__.__name__
-    if pre:
-      self._pre_hooks[name].append(pre)
-    if post:
-      self._post_hooks[name].append(post)
-
-  def hexdump(self, size=128, start_at=None):
-    # if no params  - dump from here to the end
-    blob = self.peek(size, at=start_at)
-    return hexdump(blob)
-
-  def dump(self):
-    # TODO: check if we are operating on BytesIO or file provided as FD
-    return self._obj.getvalue()
-
-  def set_endian(self, e):
-    assert e in "><", "Endian should be > or <"
-    self._endian = e
+    @classmethod
+    def from_fd(cls, fd: BinaryIO) -> 'Wire':
+        return cls(from_fd=fd)
     
-  def get_endian(self):
-    assert self._endian in "><", "Invalid endian or not set"
-    return self._endian
+    @classmethod
+    def from_string(cls, s: str) -> 'Wire':
+        return cls(from_string=s)
+    
+    def _post_init(self):
+        for key in dir(self):
+            attr = getattr(self, key)
+            if getattr(attr, '__is_hookable', False):
+                self._pre_hooks[key] = []
+                self._post_hooks[key] = []
+        self.initialize()
 
-  def fix_endian(self, fmt):
-    if fmt[0] not in "><" and self._endian:
-      return self._endian + fmt
-    return fmt
+    def initialize(self):
+        """Optional initialization method for subclasses."""
+        pass
 
-  def pushd(self):
-    """ push current position on stack """
-    self._pos_stack.append(self.get_pos())
+    def install_hook(self, func, pre=None, post=None):
+        """Installs pre or post hooks for a hookable method."""
+        name = func.__name__
+        if pre:
+            self._pre_hooks[name].append(pre)
+        if post:
+            self._post_hooks[name].append(post)
 
-  def popd(self):
-    """ pop position from stack and set it """
-    self._obj.seek(self._pos_stack.pop(), os.SEEK_SET)
+    def hexdump(self, size: int = 128, start_at: Optional[int] = None) -> str:
+        """Returns a hexdump of a portion of the data."""
+        blob = self.peek(size, at=start_at)
+        return hexdump(blob, offset=start_at if start_at is not None else self.get_pos())
 
-  def peekn(self, size):
-    """ Peek exacly n-bytes """
-    b = self.peek(size)
-    if len(b) != size:
-      raise Exception(f"Fail to peek {size} bytes , got {len(b)}")
-    return b
+    def dump(self) -> bytes:
+        """Returns the entire contents of the underlying object if possible."""
+        if hasattr(self._obj, 'getvalue'):
+            return self._obj.getvalue()
+        # For files, we might need to read all, but that's risky.
+        # Original code used getvalue() blindly.
+        return b""
 
-  def readn(self, size):
-    """ Read exacly n-bytes """
-    b = self.read(size)
-    if len(b) != size:
-      raise Exception(f"Fail to read {size} bytes , got {len(b)}")
-    return b
+    def set_endian(self, e: str):
+        """Sets the endianness ('>' for big, '<' for little)."""
+        assert e in (ENDIAN_BIG, ENDIAN_LITTLE), f"Endian should be {ENDIAN_BIG} or {ENDIAN_LITTLE}"
+        self._endian = e
+        
+    def get_endian(self) -> str:
+        """Returns the current endianness."""
+        return self._endian
 
-  def peek(self, size, at=None):
-    self.pushd()
-    if at is not None:
-      if at <0:
-        self._obj.seek(at, os.SEEK_CUR)
-      else:
-        self._obj.seek(at, os.SEEK_SET)
-    value = self._obj.read(size)
-    self.popd()
-    return value
+    def fix_endian(self, fmt: str) -> str:
+        """Prepends the current endianness to the format string if missing."""
+        if fmt and fmt[0] not in "><@=!" and self._endian:
+            return self._endian + fmt
+        return fmt
 
-  @make_hookable
-  def write(self, b):
-    retval = self._obj.write(b)
-    return retval
+    def pushd(self):
+        """Pushes the current position onto a stack."""
+        self._pos_stack.append(self.get_pos())
 
-  @make_hookable
-  def read(self, n=None):
-    value = self._obj.read(n)
-    return value
+    def popd(self):
+        """Pops a position from the stack and seeks to it."""
+        if not self._pos_stack:
+            raise IndexError("popd from empty position stack")
+        self.goto(self._pos_stack.pop())
 
-  def bytes_available(self):
-    """ Try to check how many bytes are still to read in the stream"""
-    p1 = self.get_pos()
-    self.pushd()
-    self.goto_end()
-    p2 = self.get_pos()
-    self.popd()
-    return p2-p1
+    def peekn(self, size: int) -> bytes:
+        """Peeks exactly n bytes, raising an error if fewer are available."""
+        b = self.peek(size)
+        if len(b) != size:
+            raise EOFError(f"Failed to peek {size} bytes, got {len(b)}")
+        return b
 
-  ## POSTITION
+    def readn(self, size: int) -> bytes:
+        """Reads exactly n bytes, raising an error if fewer are available."""
+        b = self.read(size)
+        if len(b) != size:
+            raise EOFError(f"Failed to read {size} bytes, got {len(b)}")
+        return b
 
-  def get_pos(self):
-    return self._obj.tell()
+    def peek(self, size: int, at: Optional[int] = None) -> bytes:
+        """Peeks bytes without moving the current position."""
+        self.pushd()
+        if at is not None:
+            if at < 0:
+                self._obj.seek(at, os.SEEK_CUR)
+            else:
+                self._obj.seek(at, os.SEEK_SET)
+        value = self._obj.read(size)
+        self.popd()
+        return value
 
-  def goto(self, p):
-    self._obj.seek(p, os.SEEK_SET)
+    @make_hookable
+    def write(self, b: bytes) -> int:
+        """Writes bytes to the stream."""
+        return self._obj.write(b)
 
-  def goto_begin(self):
-    self.goto(0)
+    @make_hookable
+    def read(self, n: Optional[int] = None) -> bytes:
+        """Reads bytes from the stream."""
+        return self._obj.read(n)
 
-  def goto_end(self):
-    self._obj.seek(0, os.SEEK_END)
+    def bytes_available(self) -> int:
+        """Returns the number of bytes remaining in the stream."""
+        pos = self.get_pos()
+        self._obj.seek(0, os.SEEK_END)
+        end = self.get_pos()
+        self._obj.seek(pos, os.SEEK_SET)
+        return end - pos
 
-  ## READING
+    def get_pos(self) -> int:
+        """Returns the current position."""
+        return self._obj.tell()
 
-  @make_hookable
-  def read_fmt(self, fmt, into_dict=None):
-    """ Read using struct format """
-    fmt = self.fix_endian(fmt)
-    sz = struct.calcsize(fmt)
-    b = self.readn(sz)
-    r = unpack_ex(fmt, b, into_dict)
-    return r
+    def goto(self, p: int):
+        """Seeks to an absolute position."""
+        self._obj.seek(p, os.SEEK_SET)
 
-  def peek_fmt(self, fmt, into_dict=None):
-    """ Peek using struct format """
-    fmt = self.fix_endian(fmt)
-    sz = struct.calcsize(fmt)
-    b = self.peekn(sz)
-    return unpack_ex(fmt, b, into_dict)
+    def goto_begin(self):
+        """Seeks to the beginning of the stream."""
+        self.goto(0)
 
-  ## WRITING
+    def goto_end(self):
+        """Seeks to the end of the stream."""
+        self._obj.seek(0, os.SEEK_END)
 
-  def write_fmt(self, fmt, *a):
-    return self.write(struct.pack(fmt, *a))
+    @make_hookable
+    def read_fmt(self, fmt: str, into_dict: Optional[List[str]] = None) -> Any:
+        """Reads data using a struct format string."""
+        fmt = self.fix_endian(fmt)
+        sz = struct.calcsize(fmt)
+        b = self.readn(sz)
+        return unpack_ex(fmt, b, into_dict)
 
-  def write_hex(self, stuff):
-    return self.write(bytes.fromhex(stuff))
+    def peek_fmt(self, fmt: str, into_dict: Optional[List[str]] = None) -> Any:
+        """Peeks data using a struct format string."""
+        fmt = self.fix_endian(fmt)
+        sz = struct.calcsize(fmt)
+        b = self.peekn(sz)
+        return unpack_ex(fmt, b, into_dict)
 
+    def write_fmt(self, fmt: str, *args):
+        """Writes data using a struct format string."""
+        fmt = self.fix_endian(fmt)
+        return self.write(struct.pack(fmt, *args))
 
-  def _peek_single(self, fmt):
-    self.pushd()
-    val = self.peek_fmt(self._endian + fmt)
-    self.popd()
-    return val
+    def write_hex(self, hex_string: str) -> int:
+        """Writes bytes from a hex string."""
+        return self.write(bytes.fromhex(hex_string))
 
-  def peek_byte(self):
-    return self._peek_single("B")
+    def _read_single(self, fmt: str) -> Any:
+        return self.read_fmt(fmt)
 
+    def _write_single(self, fmt: str, val: Any) -> int:
+        return self.write_fmt(fmt, val)
 
-  _read_single = lambda self, fmt: self.read_fmt(self._endian + fmt)
+    def peek_byte(self) -> int:
+        return self.peek_fmt("B")
 
-  def read_byte(self):
-    return self._read_single("B")
+    def read_byte(self) -> int: return self._read_single("B")
+    def read_word(self) -> int: return self._read_single("H")
+    def read_dword(self) -> int: return self._read_single("I")
+    def read_qword(self) -> int: return self._read_single("Q")
+    def read_sbyte(self) -> int: return self._read_single("b")
+    def read_sword(self) -> int: return self._read_single("h")
+    def read_sdword(self) -> int: return self._read_single("i")
+    def read_sqword(self) -> int: return self._read_single("q")
 
-  def read_word(self):
-    return self._read_single("H")
-
-  def read_dword(self):
-    return self._read_single("I")
-
-  def read_qword(self):
-    return self._read_single("Q")
-
-  def read_sbyte(self):
-    return self._read_single("b")
-
-  def read_sword(self):
-    return self._read_single("h")
-
-  def read_sdword(self):
-    return self._read_single("i")
-
-  def read_sqword(self):
-    return self._read_single("q")
-
-
-  _write_single = lambda self, fmt, val: self.write_fmt(self._endian + fmt, val)
-
-  def write_byte(self, val):
-    return self._write_single("B", val)
-
-  def write_word(self, val):
-    return self._write_single("H", val)
-
-  def write_dword(self, val):
-    return self._write_single("I", val)
-
-  def write_qword(self, val):
-    return self._write_single("Q", val)
-
-  def write_sbyte(self, val):
-    return self._write_single("b", val)
-
-  def write_sword(self, val):
-    return self._write_single("h", val)
-
-  def write_sdword(self, val):
-    return self._write_single("i", val)
-
-  def write_sqword(self, val):
-    return self._write_single("q", val)
+    def write_byte(self, val: int): self._write_single("B", val)
+    def write_word(self, val: int): self._write_single("H", val)
+    def write_dword(self, val: int): self._write_single("I", val)
+    def write_qword(self, val: int): self._write_single("Q", val)
+    def write_sbyte(self, val: int): self._write_single("b", val)
+    def write_sword(self, val: int): self._write_single("h", val)
+    def write_sdword(self, val: int): self._write_single("i", val)
+    def write_sqword(self, val: int): self._write_single("q", val)
 
 
 
@@ -660,7 +651,7 @@ class StructureReader:
     pass
 
 
-def structure_to_html_viewer(st, into_file):
+def structure_to_html_viewer(st, into_file=None):
   return custom_json_serializer(
     {
       "data_hex": st.get_data().hex(), 

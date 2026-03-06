@@ -326,77 +326,79 @@ class Wire:
 ##
 
 
-class StructItemAbstract:
-  pos :int = 0
-  size :int = 0
-  kind = None
+from dataclasses import dataclass, field
 
-  def __init__(self, **kwargs) -> None:
-    for k,v in kwargs.items():
-      setattr(self, k, v)
+@dataclass
+class StructItem:
+    """Base class for all structural items."""
+    pos: int = 0
+    size: int = 0
+    kind: str = "ABSTRACT"
 
-  def _dump_basic(self):
-    result = {}
-    result["TYPE"] = self.kind
-    result["POS"] = self.pos
-    result["SIZE"] = self.size
-    return result
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "TYPE": self.kind,
+            "POS": self.pos,
+            "SIZE": self.size,
+        }
 
-class DataItem(StructItemAbstract):
-  raw = b""
-  fmt = None
-  kind = "DATA"
+    def __json__(self) -> Dict[str, Any]:
+        return self.to_dict()
 
-  def __json__(self):
-    result = self._dump_basic()
-    if self.fmt is not None:
-      print(f"FORMAT {self.fmt} << {self.raw}")
-      result["format"] = self.fmt
-      tmp =struct.unpack(self.fmt, self.raw)
-      if len(tmp)==1:
-        tmp = tmp[0]
-      result["data_fmt"] = tmp
-    result["data_hex"] = self.raw.hex()
-    return result
+@dataclass
+class DataItem(StructItem):
+    """Represents a leaf node containing raw data."""
+    raw: bytes = b""
+    fmt: Optional[str] = None
+    kind: str = "DATA"
 
-class StructItemOBJECT(StructItemAbstract):
-  items = None
-  class_name = None
-  kind = "OBJECT"
+    def to_dict(self) -> Dict[str, Any]:
+        result = super().to_dict()
+        if self.fmt:
+            result["format"] = self.fmt
+            try:
+                unpacked = struct.unpack(self.fmt, self.raw)
+                result["data_fmt"] = unpacked[0] if len(unpacked) == 1 else unpacked
+            except (struct.error, TypeError):
+                logger.warning(f"Failed to unpack data at {self.pos} with format {self.fmt}")
+        
+        result["data_hex"] = self.raw.hex()
+        return result
 
-  def __init__(self, **kwargs) -> None:
-    super().__init__(**kwargs)
-    self.items = []
+@dataclass
+class StructItemObject(StructItem):
+    """Represents a collection of named fields."""
+    items: List[Tuple[str, StructItem]] = field(default_factory=list)
+    class_name: Optional[str] = None
+    kind: str = "OBJECT"
 
-  def add(self, name, item):
-    self.size += item.size
-    self.items.append([name, item])
+    def add(self, name: str, item: StructItem):
+        self.size += item.size
+        self.items.append((name, item))
 
-  def __json__(self):
-    result = self._dump_basic()
-    if self.class_name:
-      result["CLASS"] = self.class_name
-    result['FIELDS'] = self.items
-    return result
+    def to_dict(self) -> Dict[str, Any]:
+        result = super().to_dict()
+        if self.class_name:
+            result["CLASS"] = self.class_name
+        result['FIELDS'] = self.items
+        return result
 
 
 
-class StructItemLIST(StructItemAbstract):
-  items = None
-  kind = "LIST"
+@dataclass
+class StructItemList(StructItem):
+    """Represents a collection of ordered items."""
+    items: List[StructItem] = field(default_factory=list)
+    kind: str = "LIST"
 
-  def __init__(self, **kwargs) -> None:
-    super().__init__(**kwargs)
-    self.items = []
+    def add(self, item: StructItem):
+        self.size += item.size
+        self.items.append(item)
 
-  def add(self, item):
-    self.size += item.size
-    self.items.append(item)
-
-  def __json__(self):
-    result = self._dump_basic()
-    result["ITEMS"] =  self.items
-    return result
+    def to_dict(self) -> Dict[str, Any]:
+        result = super().to_dict()
+        result["ITEMS"] = self.items
+        return result
 
 
 
@@ -435,254 +437,190 @@ class MagicProxyObject:
     return getattr(self._parent._wire,__name)
 
 class StructureReader:
-  """
-    Implements reading of basic (nested) structures/collections such as :
-      - objects/dicts
-      - lists/arrays
+    """
+    Tracks the structure of binary data as it is being read from a Wire.
+    """
+    def __init__(self, wire: Wire):
+        self._wire = wire
+        self._item_stack: List[StructItem] = []
+        self._names_stack: List[str] = []
+        self._struct_depth = 0
+        self._last_format: Optional[str] = None
+        self._current_item: Optional[DataItem] = None
+        self._data = bytearray()
+        
+        # Start with a root object
+        root = StructItemObject(pos=self._wire.get_pos())
+        self._item_stack.append(root)
 
+        wire.install_hook(wire.read, pre=self._hook_pre_read, post=self._hook_post_read)
+        wire.install_hook(wire.read_fmt, pre=self._hook_pre_fmt_read, post=self._hook_post_fmt_read)
 
-  """
-  ## TODO: add structure writer. same stuff
-  _bytes_so_far = 0
-  _item_stack = None
-  _struct_depth = 0
-  _names_stack = None
-  _last_format = None
-  _current_item = None
-  _data = b""
-  _waiting_for_fmt = False
-  main = None
+    def _hook_pre_read(self, size: int, *args, **kwargs):
+        logger.debug(f"HOOK PRE-READ {size}")
+        self._current_item = DataItem(pos=self._wire.get_pos(), size=size, fmt=self._last_format)
+        self._last_format = None
+        return None
 
+    def _hook_post_read(self, result: bytes):
+        if self._current_item is None:
+            logger.error("current_item is None in post-read hook")
+            return result
+            
+        logger.debug(f"HOOK POST-READ {len(result)} bytes")
+        self._current_item.raw = result
+        self._append_to_current(self._current_item)
+        self._current_item = None
+        self._data.extend(result)
+        return result
 
-  def __init__(self, wire: Wire):
-    self._wire = wire
-    self._item_stack = []   # queue ?
-    self._names_stack = []  # queue ?
+    def _hook_pre_fmt_read(self, fmt: str, *args, **kwargs):
+        logger.debug(f"HOOK PRE-FMT-READ {fmt}")
+        self._last_format = fmt
+        return None
 
-    # TODO: should we start with list or object ?
-    self._item_stack.append(
-      StructItemOBJECT(pos=self._wire.get_pos())
-    )
+    def _hook_post_fmt_read(self, result):
+        logger.debug(f"HOOK POST-FMT-READ {result}")
+        return result
 
-    wire.install_hook(
-      wire.read,
-      pre=self._hook_pre_read,
-      post=self._hook_post_read,
-    )
-    wire.install_hook(
-      wire.read_fmt,
-      pre=self._hook_pre_fmt_read,
-      post=self._hook_post_fmt_read,
-    )
+    def will_read(self, *names: str) -> MagicProxyObject:
+        """Queues names for the next items to be read."""
+        for name in reversed(names):
+            self._names_stack.append(name)
+        return MagicProxyObject(self)
 
-  def _hook_pre_read(self, *a, **kw):
-    size = a[0] # unpack args
-    logger.debug(f"HOOK PRE-READ {size}")
-    self._current_item = DataItem(pos=self._wire.get_pos(), size=size, fmt=self._last_format)
-    self._last_format = None
-    return None
+    def start_object(self, class_name: str = "", comment: str = "") -> MagicStructReaderContextManager:
+        """Starts a new nested object context."""
+        obj = StructItemObject(class_name=class_name, pos=self._wire.get_pos())
+        self._push_item(obj)
+        return MagicStructReaderContextManager(self, obj, comment)
 
-  def _hook_post_read(self, result):
-    ''' raw read bytes '''
-    assert self._current_item is not None, "current_item is none. that should not happend (check pre-read hook)"
-    logger.debug(f"HOOK POST-READ {result}")
-    self._current_item.raw = result
-    self._append_to_current(self._current_item)
-    self._current_item = None
-    self._data += result
-    return result
+    def start_list(self, comment: str = "") -> MagicStructReaderContextManager:
+        """Starts a new nested list context."""
+        obj = StructItemList(pos=self._wire.get_pos())
+        self._push_item(obj)
+        return MagicStructReaderContextManager(self, obj, comment)
 
+    def _append_to_current(self, o: StructItem):
+        top = self.last_item()
+        if isinstance(top, StructItemObject):
+            name = self._names_stack.pop() if self._names_stack else f"item_{len(top.items):05}"
+            top.add(name, o)
+        elif isinstance(top, StructItemList):
+            top.add(o)
+        else:
+            raise TypeError(f"Cannot append to item of type {type(top)}")
 
-  def _hook_pre_fmt_read(self, *a, **kw):
-    self._waiting_for_fmt = True
-    fmt = a[0]
-    logger.debug(f"HOOK PRE-FMT-READ {fmt}")
-    self._last_format = fmt
-    return None
+    def _push_item(self, o: StructItem):
+        self._append_to_current(o)
+        self._item_stack.append(o)
 
-  def _hook_post_fmt_read(self, result):
-    self._waiting_for_fmt = False
-    logger.debug(f"HOOK POST-FMT-READ {result}")
-    return result
+    def last_item(self) -> StructItem:
+        return self._item_stack[-1]
 
-  def will_read(self, *names):
-    for item in names[::-1]:
-      self._names_stack.append(item)
-    return MagicProxyObject(self)
+    def end_item(self, exc_type, exc_val, exc_tb):
+        """Ends the current structural context."""
+        top = self._item_stack.pop()
+        self.last_item().size += top.size
+        
+        if exc_type:
+            import traceback
+            logger.error(f"Error ending item at depth {len(self._item_stack)}")
+            logger.error(f"Exception: {exc_type.__name__}: {exc_val}")
+            # traceback.print_tb(exc_tb)
 
-  def _try_get_name(self):
-    # TODO: should stack-of-names be FIFO or LIFO  ?
-    if len(self._names_stack) > 0:
-      return self._names_stack.pop(0)
-    #else:
-    return ""
+    def get_root_element(self) -> StructItem:
+        return self._item_stack[0]
 
-
-  def start_object(self, class_name="", comment=""):
-    obj = StructItemOBJECT(class_name=class_name, pos=self._wire.get_pos())
-    self._push_item(obj)
-    logger.debug(f"START object")
-    return MagicStructReaderContextManager(self, obj, comment)
-
-  def start_list(self, comment=""):
-    obj = StructItemLIST(pos=self._wire.get_pos())
-    self._push_item(obj)
-    logger.debug("START list")
-    return MagicStructReaderContextManager(self, obj, comment)
-
-  def _append_to_current(self, o):
-    top = self.last_item()
-    parent_type = type(top)
-    assert parent_type in [StructItemLIST, StructItemOBJECT], "This should not be possible"
-    #print(parent_type)
-    if parent_type == StructItemOBJECT:
-      # Object - requred item name OR will be automatically generated
-      name = f"item_{len(top.items):05}"
-      if len(self._names_stack)>0:
-        name = self._names_stack.pop()
-      else:
-        logger.warning(f"!!! No names on stack ! will auto-generate one : {name}")
-      #assert len(self._names_stack)>0, f"Need field name for property (object:{top.name})!"
-      logger.debug(f"[+] object field: {name}")
-      top.add( name, o)
-    if parent_type == StructItemLIST:
-      logger.debug("[+] list item ")
-      top.add( o )
-    #else:
-    #  raise Exception("OMG !")
-
-  def _push_item(self, o):
-    self._append_to_current(o)
-    self._item_stack.append(o)
-
-  def last_item(self):
-    return self._item_stack[-1]
-
-  def end_item(self, exception_type, exception_value, exception_traceback):
-    # called when exiting scope (Object OR List)
-    logger.debug("END item")
-    top = self._item_stack.pop()
-    self.last_item().size += top.size
-    if exception_type is None:
-      return
-
-    ## HANDLE un-clean end
-    import traceback
-    logger.error("  ** EXCEPTION ** ")
-    logger.error(f"ERROR at {self.last_item().__class__.__name__}")
-    for item in self._item_stack:
-      logger.error(item.__class__.__name__)
-
-    logger.error(f"-> type:{exception_type} : value:{exception_value}")
-    logger.error(f"==> REASON:{0}",traceback.extract_tb(exception_traceback))
-
-    raise exception_value # re-raise
-
-
-  def get_root_element(self):
-    return self._item_stack[0]
-
-  def get_data(self):
-    # or self._wire.dump()
-    return self._data
+    def get_data(self) -> bytes:
+        return bytes(self._data)
 
 
 
 
 
-  def output_imHex(self):
-    parts = []
-    tmp = self._item_stack[0]
+    def output_imHex(self) -> str:
+        """Generates imHex pattern language representation."""
+        parts = []
+        root_el = self.get_root_element()
+        counter = IncrementalNameGenerator()
+        
+        # Simple mapping for imHex types
+        IMHEX_TYPES = {
+            ">H": "u16", ">I": "u32", ">Q": "u64", ">B": "u8",
+            "<H": "u16", "<I": "u32", "<Q": "u64", "<B": "u8",
+            "H": "u16", "I": "u32", "Q": "u64", "B": "u8",
+        }
 
-    internal_counter = IncrementalNameGenerator()
-    imhex_translate = {
-      ">h" : "u16",
+        def _parse(el) -> Tuple[str, int]:
+            if isinstance(el, StructItemList):
+                name = counter.next("ARRAY")
+                struct_lines = [f"struct {name} {{"]
+                for i, item in enumerate(el.items):
+                    item_type, n = _parse(item)
+                    suffix = f"[{n}]" if n > 1 else ""
+                    struct_lines.append(f"  {item_type} ITEM_{i}{suffix};")
+                struct_lines.append("};")
+                parts.append("\n".join(struct_lines))
+                return name, 1
+            
+            if isinstance(el, StructItemObject):
+                name = counter.next("OBJECT")
+                struct_lines = [f"struct {name} {{"]
+                for prop, val in el.items:
+                    item_type, n = _parse(val)
+                    suffix = f"[{n}]" if n > 1 else ""
+                    struct_lines.append(f"  {item_type} {prop}{suffix};")
+                struct_lines.append("};")
+                parts.append("\n".join(struct_lines))
+                return name, 1
+            
+            if isinstance(el, DataItem):
+                return IMHEX_TYPES.get(el.fmt, "u8"), el.size
+            
+            return "u8", 1
+
+        root_name, _ = _parse(root_el)
+        parts.append(f"{root_name} root @ 0x00;")
+        return "\n\n".join(parts)
+
+    def output_kaitai(self):
+        """Placeholder for Kaitai Struct output."""
+        pass
+
+
+def structure_to_html_viewer(st: StructureReader, into_file=None):
+    """Serializes the structure for the HTML viewer."""
+    data = {
+        "data_hex": st.get_data().hex(), 
+        "struct": st.get_root_element()
     }
-
-    def _imhex_obj(el):
-      name = internal_counter.next("OBJECT")
-      tmp=[]
-      tmp.append(f"struct {name} {{ // at {el.pos}")
-      for prop, val in el.items:
-        item_type,n = _imhex_parse(val)
-        if n == 1:
-          tmp.append(f"  {item_type} {prop} ; ")
-        else:
-          tmp.append(f"  {item_type} {prop}[{n}] ; ")
-      tmp.append(" }; // obj ")
-      parts.append( "\n".join( tmp ) )
-      return name, 1
-
-    def _imhex_list(el):
-      name = internal_counter.next("ARRAY")
-      tmp = []
-      tmp.append(f"struct {name} {{ // at {el.pos}")
-      for i,item in enumerate(el.items):
-        item_type,n = _imhex_parse(item)
-        if n == 1:
-          tmp.append(f"  {item_type}  ITEM_{i};")
-        else:
-          tmp.append(f"  {item_type}  ITEM_{i}[{n}];")
-      tmp.append(" }; // end " )
-      parts.append( "\n".join( tmp ) )
-      return name, 1
-
-    def _imhex_data(el):
-      if el.fmt and el.fmt in imhex_translate:
-        return imhex_translate[el.fmt], 1
-      n = el.size
-      return "u8", n
-
-    def _imhex_parse(el):
-      if el.kind == "LIST":
-        return _imhex_list(el)
-      if el.kind == "OBJECT":
-        return _imhex_obj(el)
-      if el.kind == "DATA":
-        return _imhex_data(el)
-      raise Exception("BAD NODE")
-
-    root,_  = _imhex_parse(tmp)
-    parts.append(f"{root} rootItem @ 0x00;\n")
-    return "\n\n".join(parts[:])
-
-  def output_kaitai(self):
-    """ plceholder """
-    pass
+    return custom_json_serializer(data, into_file=into_file)
 
 
-def structure_to_html_viewer(st, into_file=None):
-  return custom_json_serializer(
-    {
-      "data_hex": st.get_data().hex(), 
-      "struct": st.get_root_element()
-    }, 
-    into_file=into_file
-  )
+def custom_json_serializer(obj: Any, into_file=None):
+    """JSON serializer that handles objects with __json__ methods."""
+    import json
+
+    def default_handler(o):
+        if hasattr(o, "__json__"):
+            return o.__json__()
+        raise TypeError(f"Object of type {o.__class__.__name__} is not JSON serializable")
+    
+    if into_file is None:
+        return json.dumps(obj, default=default_handler, indent=2)
+    return json.dump(obj, into_file, default=default_handler, indent=2)
 
 
-def custom_json_serializer(st,into_file=None):
-  import json
-
-  def custom_dumper(obj):
-    print("DUMP", obj)
-    return obj.__json__()
-  
-  if into_file is None:
-    return json.dumps(st, default=custom_dumper)
-  return json.dump(st, into_file, default=custom_dumper)
-
-
-def structure_to_yaml(reader):
-  import yaml
-  root = reader.get_root_element()
-  #yaml.add_representer(OrderedDict, lambda dumper, data: dumper.represent_mapping("tag:yaml.org,2002:map", data.items()))
-  return yaml.dump(root.dump(), default_flow_style=False)
-
+def structure_to_yaml(reader: StructureReader):
+    """Serializes the structure to YAML."""
+    import yaml
+    root = reader.get_root_element()
+    return yaml.dump(root.__json__(), default_flow_style=False)
 
 
 if __name__ == "__main__":
-  print("Hello there")
+    print("Bytewirez library loaded.")
 
 
 

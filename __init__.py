@@ -1,1 +1,3 @@
-from .bytewirez import *
+# backward compatibility
+from src.bytewirez import * 
+

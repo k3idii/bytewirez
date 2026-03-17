@@ -1,0 +1,30 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "bytewirez"
+version = "0.1.0"
+description = "Tools to read/write structures from stream of bytes"
+readme = "README.md"
+license = {file = "LICENSE"}
+requires-python = ">=3.7"
+keywords = ["binary", "struct", "unpack", "reader", "writer"]
+authors = [
+  {name = "Keidii"},
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+    "PyYAML",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/keidii/bytewirez"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/bytewirez"]

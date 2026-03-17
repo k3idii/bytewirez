@@ -614,7 +614,10 @@ def custom_json_serializer(obj: Any, into_file=None):
 
 def structure_to_yaml(reader: StructureReader):
     """Serializes the structure to YAML."""
-    import yaml
+    try:
+        import yaml
+    except ImportError:
+        raise ImportError("PyYAML is required for YAML serialization. Please install it with 'pip install pyyaml'")
     root = reader.get_root_element()
     return yaml.dump(root.__json__(), default_flow_style=False)
 

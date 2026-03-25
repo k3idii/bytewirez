@@ -26,8 +26,12 @@ jobs:
         python -m pip install --upgrade pip
         pip install . PyYAML
 
-    - name: Run examples as tests
+    - name: Run tests and examples
       run: |
+        # Run formal unittests
+        python -m unittest discover tests
+        
+        # Run examples to ensure they still work
         python examples/example_read.py
         python examples/example_struct.py
 

@@ -4,14 +4,14 @@ build-backend = "hatchling.build"
 
 [project]
 name = "bytewirez"
-version = "0.1.0"
+version = "0.1.1"
 description = "Tools to read/write structures from stream of bytes"
 readme = "README.md"
 license = {file = "LICENSE"}
 requires-python = ">=3.7"
 keywords = ["binary", "struct", "unpack", "reader", "writer"]
 authors = [
-  {name = "Keidii"},
+  {name = "k3idii/Tomasz Bukowski"},
 ]
 classifiers = [
     "Programming Language :: Python :: 3",
@@ -24,7 +24,7 @@ dependencies = [
 ]
 
 [project.urls]
-"Homepage" = "https://github.com/keidii/bytewirez"
+"Homepage" = "https://github.com/k3idii/bytewirez"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/bytewirez"]

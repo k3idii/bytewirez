@@ -139,6 +139,10 @@ class Wire:
         self._post_init()
 
     @classmethod
+    def empty(cls) -> 'Wire':
+        return cls(from_bytes=b'')
+
+    @classmethod
     def from_bytes(cls, b: bytes) -> 'Wire':
         return cls(from_bytes=b)
 

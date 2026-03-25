@@ -8,7 +8,7 @@ logging.basicConfig(level=logging.DEBUG)
 INPUT_DATA = b'xxyyaaabbcc123'
 INPUT_DATA = bytes.fromhex('11223344 2222 2222 fefe 1234 12345678 88 99 f1 f2 f3')
 
-wire = bytewirez.Wire(from_bytes=INPUT_DATA)
+wire = bytewirez.Wire.from_bytes(INPUT_DATA)
 
 st = bytewirez.StructureReader(wire)
 

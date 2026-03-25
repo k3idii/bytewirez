@@ -4,7 +4,7 @@ def _wr_fnc(*a,**kw):
   print("WRITE HOOK:",a,kw)
   return None
 
-wire = bytewirez.Wire(from_bytes=b'')
+wire = bytewirez.Wire.empty()
 wire.install_hook(wire.write, pre=_wr_fnc)
 wire.write(b'test')
 wire.write_word(0x1234)

@@ -5,7 +5,7 @@ Tools to read/write structures from stream of bytes
 ### WRITE
 
 ```python
-wire = Wire(from_bytes=b'')
+wire = Wire.from_bytes(b'')
 wire.write(b'test')
 wire.write_word(0x1234)
 wire.write_fmt("I",0x31337)

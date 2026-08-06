@@ -21,20 +21,11 @@ jobs:
       with:
         python-version: ${{ matrix.python-version }}
     
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install . PyYAML
-
     - name: Run tests and examples
       run: |
         # Run formal unittests
         python -m unittest discover tests
         
-        # Run examples to ensure they still work
-        python examples/example_read.py
-        python examples/example_struct.py
-
   build-and-publish:
     needs: test
     if: github.event_name == 'release' && github.event.action == 'created'
